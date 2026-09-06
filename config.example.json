@@ -1,0 +1,28 @@
+{
+  "listen": ":7865",
+  "api_key": "your-api-key-here",
+  "auth_dir": "./auths",
+  "state_file": "./data/state.json",
+
+  "upstream": {
+    "base": "https://copilot.tencent.com",
+    "env": "internal",
+    "timeout_seconds": 180
+  },
+
+  "oauth": {
+    "token_url": "",
+    "client_id": ""
+  },
+
+  "cooldown": {
+    "hard_credit": "12h",
+    "soft_rate": "60s",
+    "err_threshold": 5,
+    "err_cooldown": "10m"
+  },
+
+  "schedule": {
+    "check_hours": [0, 6, 12, 18]
+  }
+}

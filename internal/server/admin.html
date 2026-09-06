@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>CodeBuddy2API · 控制台</title>
+<style>
+/* ============ 视觉基础（对齐 CatPaw 控制台：浅色玻璃 + 卡片化） ============ */
+@import url('https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap');
+:root{
+  --bg:#EEF2F8; --bg2:#E4EAF4; --card:rgba(255,255,255,.68); --card2:rgba(255,255,255,.9);
+  --line:rgba(100,116,139,.42); --text:#1E293B; --muted:#55657E; --faint:#7e8aa3;
+  --accent:#0284c7; --accent-2:#0ea5e9;
+  --grad:linear-gradient(135deg,#06b6d4,#2563eb);
+  --ok:#16a34a; --warn:#d97706; --bad:#dc2626;
+  --radius:16px; --radius-sm:10px;
+  --shadow:0 8px 24px rgba(30,41,59,.08), inset 0 1px 0 rgba(255,255,255,.95);
+  --shadow-lg:0 16px 40px rgba(30,41,59,.14), inset 0 1px 0 rgba(255,255,255,.95);
+  --blur:14px;
+  --font-sans:'Fira Sans',ui-sans-serif,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+  --font-mono:'Fira Code',ui-monospace,SFMono-Regular,Menlo,Consolas,'Courier New',monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;color:var(--text);font:14px/1.55 var(--font-sans);-webkit-font-smoothing:antialiased;
+  background:
+    radial-gradient(900px 480px at 8% -8%, rgba(191,219,254,.55), transparent),
+    radial-gradient(820px 440px at 96% 2%, rgba(221,214,254,.5), transparent),
+    radial-gradient(760px 420px at 55% 112%, rgba(165,243,252,.42), transparent),
+    linear-gradient(180deg,#F6F8FC,#ECF1F8)}
+a{color:var(--accent);text-decoration:none}
+button{font:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+::selection{background:rgba(2,132,199,.22)}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:rgba(100,116,139,.35);border-radius:99px}
+::-webkit-scrollbar-track{background:transparent}
+
+.wrap{max-width:1240px;margin:0 auto;padding:24px 18px 64px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:20px}
+.brand{display:flex;align-items:center;gap:13px;min-width:0}
+.logo{width:44px;height:44px;border-radius:14px;background:var(--grad);color:#fff;display:grid;place-items:center;font-weight:800;font-family:var(--font-mono);letter-spacing:-.5px;box-shadow:var(--shadow);flex:none}
+.brand h1{margin:0;font-size:20px;font-weight:600;color:#0F172A;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.brand h1 small{font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.5px;border:1px solid var(--line);border-radius:999px;padding:1px 8px;background:rgba(255,255,255,.6)}
+.brand p{margin:2px 0 0;color:var(--muted);font-size:12px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.btn{border:1px solid var(--line);background:rgba(255,255,255,.8);color:#334155;padding:8px 14px;border-radius:var(--radius-sm);cursor:pointer;transition:border-color .18s,background .18s,transform .12s,box-shadow .18s;box-shadow:0 2px 8px rgba(30,41,59,.05);font-weight:600}
+.btn:hover{border-color:var(--accent);background:#fff;transform:translateY(-1px);box-shadow:var(--shadow)}
+.btn:active{transform:translateY(0)}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.btn.primary{background:var(--grad);border-color:transparent;color:#fff;font-weight:700;box-shadow:0 4px 16px rgba(2,132,199,.28)}
+.btn.primary:hover{filter:brightness(1.06);box-shadow:0 6px 20px rgba(2,132,199,.36)}
+.btn.ghost{background:transparent;box-shadow:none;color:var(--muted)}
+.btn.ghost:hover{color:var(--accent)}
+.btn.small{padding:4px 10px;font-size:12px;border-radius:8px}
+.btn.danger{border-color:rgba(220,38,38,.5);color:#b91c1c}
+.btn.danger:hover{border-color:var(--bad);background:rgba(220,38,38,.08)}
+
+.meta{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border-radius:999px;font-size:11.5px;font-weight:600;color:var(--muted);border:1px solid var(--line);background:rgba(255,255,255,.65)}
+.meta b{font-weight:700;color:#0F172A}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none;display:inline-block}
+
+.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:18px}
+@media (max-width:1020px){.grid{grid-template-columns:repeat(3,1fr)}}
+@media (max-width:560px){.grid{grid-template-columns:repeat(2,1fr)}}
+.stat{position:relative;overflow:hidden;background:var(--card);border:1px solid rgba(255,255,255,.85);border-radius:var(--radius);padding:14px 15px 12px;box-shadow:var(--shadow);backdrop-filter:blur(var(--blur));-webkit-backdrop-filter:blur(var(--blur))}
+.stat::before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:linear-gradient(180deg,var(--accent),transparent);border-radius:4px}
+.stat .k{color:var(--muted);font-size:12px;font-weight:600}
+.stat .v{font-size:25px;font-weight:700;margin-top:4px;letter-spacing:-.5px;font-variant-numeric:tabular-nums;line-height:1.1;color:#0F172A}
+.stat .v.ok{color:#15803d}.stat .v.warn{color:#b45309}.stat .v.bad{color:#b91c1c}
+
+.card{background:var(--card);border:1px solid rgba(255,255,255,.85);border-radius:var(--radius);box-shadow:var(--shadow);margin-bottom:16px;overflow:hidden;backdrop-filter:blur(var(--blur));-webkit-backdrop-filter:blur(var(--blur))}
+.card-h{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:14px 18px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.35)}
+.card-h h2{margin:0;font-size:15px;font-weight:600;color:#0F172A;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.card-h h2 .count{color:var(--muted);font-weight:400;font-size:12px}
+.card-b{padding:14px 18px}
+
+.table{width:100%;border-collapse:collapse}
+.table th,.table td{padding:10px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.table th{color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+.table tr:last-child td{border-bottom:none}
+.table tbody tr.acct-row{transition:background .15s}
+.table tbody tr.acct-row:hover td{background:rgba(255,255,255,.5)}
+.table td strong{font-variant-numeric:tabular-nums}
+.row-actions{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+
+.badge{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:700;border:1px solid transparent;white-space:nowrap}
+.badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.badge.ok{background:rgba(22,163,74,.12);color:#15803d;border-color:rgba(22,163,74,.3)}
+.badge.warn{background:rgba(217,119,6,.12);color:#b45309;border-color:rgba(217,119,6,.3)}
+.badge.bad{background:rgba(220,38,38,.1);color:#b91c1c;border-color:rgba(220,38,38,.28)}
+.badge.info{background:rgba(2,132,199,.1);color:#0369a1;border-color:rgba(2,132,199,.28)}
+.badge.grey{background:rgba(100,116,139,.12);color:#475569;border-color:rgba(100,116,139,.25)}
+
+.mono{font-family:var(--font-mono);font-size:12px}
+.muted{color:var(--muted)}
+.hint{color:var(--muted);font-size:12px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.field input,.field select,input[type=text],select,textarea{background:rgba(255,255,255,.9);border:1px solid var(--line);color:var(--text);border-radius:var(--radius-sm);padding:9px 12px;font-size:13px;font-family:inherit;outline:none;transition:border-color .15s,box-shadow .15s}
+input[type=text]:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(2,132,199,.16)}
+input[type=text].grow{flex:1;min-width:220px}
+.tag{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:5px 11px;border-radius:999px;background:rgba(255,255,255,.8);border:1px solid var(--line);color:#334155;cursor:pointer;transition:.15s}
+.tag:hover{border-color:var(--accent)}
+.tag.active{border-color:var(--accent);background:rgba(2,132,199,.1);color:#0369a1}
+.tags{display:flex;flex-wrap:wrap;gap:7px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{background:rgba(255,255,255,.85);border:1px solid var(--line);border-radius:999px;padding:4px 11px;font-size:12px;color:var(--muted);font-family:var(--font-mono)}
+.chip b{color:#0F172A}
+
+#chat{width:100%;height:240px;resize:vertical;background:rgba(255,255,255,.82);border:1px solid var(--line);border-radius:var(--radius-sm);padding:12px;color:var(--text);overflow:auto;font-family:var(--font-mono);font-size:12.5px;white-space:pre-wrap;line-height:1.55}
+pre{background:rgba(10,12,31,.05);border:1px solid var(--line);border-radius:var(--radius-sm);padding:12px;overflow:auto;font-size:12px;line-height:1.5}
+.empty{color:var(--muted);text-align:center;padding:26px 0;font-size:13px}
+
+/* 账号内嵌套餐明细 */
+.pkg-cell{display:none}
+.acct-row.exp + .pkg-cell{display:table-row}
+.pkg-box{background:rgba(255,255,255,.45);border:1px dashed var(--line);border-radius:var(--radius-sm);padding:10px 12px;margin:4px 0}
+.pkg-box + .pkg-box{margin-top:8px}
+.pkg-t{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;font-weight:600}
+.pkg-m{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:4px}
+.pkg-m b{font-variant-numeric:tabular-nums;color:#0F172A}
+.bar{height:5px;border-radius:99px;background:rgba(2,132,199,.12);overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;border-radius:99px;background:var(--grad)}
+
+.caret{width:18px;height:18px;border-radius:6px;border:1px solid var(--line);background:rgba(255,255,255,.6);color:var(--muted);display:inline-grid;place-items:center;cursor:pointer;font-size:12px;transition:.15s}
+.caret:hover{border-color:var(--accent);color:var(--accent)}
+
+#toast{position:fixed;right:16px;bottom:16px;max-width:min(440px,90vw);display:flex;flex-direction:column;gap:8px;z-index:60}
+.toast-item{background:rgba(255,255,255,.94);border:1px solid rgba(255,255,255,.95);color:var(--text);padding:11px 14px;border-radius:12px;box-shadow:var(--shadow-lg);font-size:13px;animation:tin .2s ease;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.toast-item.err{border-left:3px solid var(--bad)}
+.toast-item.ok{border-left:3px solid var(--ok)}
+@keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+.hidden{display:none!important}
+.modal-mask{position:fixed;inset:0;background:rgba(15,23,42,.35);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:grid;place-items:center;z-index:80;padding:20px}
+.modal{width:min(400px,100%);background:rgba(255,255,255,.97);border:1px solid rgba(255,255,255,.92);border-radius:16px;box-shadow:var(--shadow-lg);padding:20px;animation:tin .18s ease}
+.modal h3{margin:0 0 8px;font-size:16px;color:#0F172A}
+.modal p{margin:0 0 16px;color:#334155;font-size:13px;line-height:1.65;word-break:break-all}
+.modal .actions{display:flex;gap:8px;justify-content:flex-end}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="brand">
+      <div class="logo">CB</div>
+      <div>
+        <h1>CodeBuddy2API <small>管理控制台</small></h1>
+        <p>腾讯 CodeBuddy 官方 API → OpenAI 兼容网关 · 账号池 / 每日签到 / 额度</p>
+      </div>
+    </div>
+    <div class="actions">
+      <span class="meta" id="m-upstream">上游 —</span>
+      <span class="meta" id="m-health">健康 —</span>
+      <button class="btn ghost" onclick="loadAll(true)">刷新</button>
+      <button class="btn primary" id="btnCheckin" onclick="doCheckin()">☑ 一键签到</button>
+    </div>
+  </div>
+
+  <!-- 概览统计 -->
+  <div class="grid">
+    <div class="stat"><div class="k">账号总数</div><div class="v" id="s-total">–</div></div>
+    <div class="stat"><div class="k">可用账号</div><div class="v ok" id="s-healthy">–</div></div>
+    <div class="stat"><div class="k">冷却中</div><div class="v warn" id="s-cooling">–</div></div>
+    <div class="stat"><div class="k">已停用</div><div class="v bad" id="s-disabled">–</div></div>
+    <div class="stat"><div class="k">积分剩余</div><div class="v ok" id="s-remain">–</div></div>
+    <div class="stat"><div class="k">本期已用</div><div class="v warn" id="s-used">–</div></div>
+  </div>
+
+  <!-- 自动授权登录（OAuth） -->
+  <div class="card">
+    <div class="card-h">
+      <h2>自动授权登录 <span class="count">CodeBuddy OAuth，一键绑定账号</span></h2>
+      <span class="hint" id="oauth-status">点击后用浏览器打开 CodeBuddy 授权页，登录授权后本页自动检测并保存。</span>
+    </div>
+    <div class="card-b">
+      <div class="row">
+        <button class="btn" onclick="startOAuth('cn')">中国版授权 (copilot.tencent.com)</button>
+        <button class="btn" onclick="startOAuth('saas')">国际版授权 (www.codebuddy.ai)</button>
+        <span class="hint">两域账号分开管理（realm=cn / saas）。授权后该账号才能参与「每日签到」。</span>
+      </div>
+      <div class="hint" style="margin-top:10px">凭证目录：<span class="mono" id="hint-authdir">auths/</span>；没有 ck_ Key 时用上方授权即可（授权型账号还能每日签到领积分）。</div>
+    </div>
+  </div>
+
+  <!-- 手动添加凭证 -->
+  <div class="card">
+    <div class="card-h"><h2>手动添加 / 凭证管理</h2></div>
+    <div class="card-b">
+      <div class="row">
+        <input type="text" id="in-key" class="grow" placeholder="ck_xxxxxxxx 或 OAuth Bearer token" spellcheck="false">
+        <input type="text" id="in-uid" placeholder="备注名 / UID（可选）" style="max-width:200px">
+        <button class="btn" onclick="testAccount()">测试</button>
+        <button class="btn primary" onclick="addAccount()">添加并登录</button>
+        <button class="btn ghost" onclick="reload()">重载目录</button>
+      </div>
+      <div id="test-result" class="hint" style="margin-top:10px;min-height:0"></div>
+    </div>
+  </div>
+
+  <!-- 账号列表 -->
+  <div class="card">
+    <div class="card-h">
+      <h2>账号与额度 <span class="count" id="acct-count"></span></h2>
+      <span class="hint" id="hint-quota">点行首「▸」看套餐明细；额度按账号周期计。</span>
+    </div>
+    <div class="card-b" style="padding-top:6px">
+      <table class="table">
+        <thead><tr><th></th><th>账号</th><th>类型</th><th>状态</th><th>额度</th><th>今日签到</th><th style="text-align:right">操作</th></tr></thead>
+        <tbody id="acct-body"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 模型 & 对话测试 -->
+  <div class="card">
+    <div class="card-h">
+      <h2>模型 / 对话测试 <span class="count" id="model-count"></span></h2>
+      <span class="hint">上游只支持流式；本服务自动聚合成非流式，两种模式都能用。点模型名填入测试框。</span>
+    </div>
+    <div class="card-b">
+      <div class="tags" id="model-tags" style="margin-bottom:12px"></div>
+      <div class="row" style="margin-bottom:10px">
+        <input type="text" id="in-model" placeholder="模型名" style="max-width:230px">
+        <select id="in-uid-sel" title="用哪个账号测试（默认自动轮询）" style="max-width:220px"><option value="">自动（池轮询）</option></select>
+        <label class="hint" style="display:flex;align-items:center;gap:6px;font-weight:600"><input type="checkbox" id="in-stream" checked style="width:auto"> 流式</label>
+        <button class="btn primary" onclick="send()">发送</button>
+        <button class="btn ghost" onclick="document.getElementById('chat').textContent=''">清空</button>
+      </div>
+      <div id="chat"></div>
+    </div>
+  </div>
+
+  <!-- 接入指引 -->
+  <div class="card">
+    <div class="card-h">
+      <h2>客户端接入</h2>
+      <div class="row" style="gap:6px">
+        <button class="btn ghost small" onclick="copyBase()">复制 Base URL</button>
+        <button class="btn ghost small" onclick="copyKey()">复制 API Key</button>
+      </div>
+    </div>
+    <div class="card-b">
+      <div class="chips" style="margin-bottom:12px">
+        <span class="chip">Base URL：<b id="k-base">-</b></span>
+        <span class="chip">API Key：<b id="k-key">-</b></span>
+      </div>
+      <div class="hint" style="margin-bottom:8px"><b>Codex CLI</b> — <span class="mono">~/.codex/config.toml</span>：</div>
+      <pre class="mono" id="ex-codex"></pre>
+      <div class="hint" style="margin-top:12px;margin-bottom:8px"><b>Claude Code / CC Switch</b> — provider 配置：</div>
+      <pre class="mono" id="ex-cc"></pre>
+      <div class="hint" style="margin-top:10px">鉴权：<span class="mono">Authorization: Bearer &lt;API Key&gt;</span>（或 <span class="mono">x-api-key</span>）。端点表：<span class="mono">/v1/chat/completions</span>（OpenAI Chat）、<span class="mono">/v1/responses</span>（Codex）、<span class="mono">/v1/messages</span>（Claude Code）。</div>
+    </div>
+  </div>
+</div>
+
+<div id="modal" class="modal-mask hidden">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <h3 id="modal-title">确认操作</h3>
+    <p id="modal-msg"></p>
+    <div class="actions">
+      <button class="btn ghost" id="modal-no" type="button">取消</button>
+      <button class="btn danger" id="modal-yes" type="button">确认</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/*__CONFIG__*/
+(function(){
+"use strict";
+const $ = id => document.getElementById(id);
+let apiKey = window.__API_KEY__ || '';
+let __ACCOUNTS__ = [];           // 最近一次 /api/status 账号，供签到 chip 更新
+let __CHECKIN__ = {};            // uid -> {signed}（来自 /api/checkin/status）
+
+/* 常量：nginx sub_filter 会把这三处改写成 /buddy 子路径前缀（勿删勿改字面量） */
+const BASE = window.location.origin;
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function authHeaders(extra){
+  const h = {'Content-Type':'application/json'};
+  if (apiKey) h['Authorization'] = 'Bearer ' + apiKey;
+  return Object.assign(h, extra || {});
+}
+function api(path, opts){
+  opts = opts || {};
+  if (!opts.cache) opts.cache = 'no-store';   // 防浏览器缓存 GET，动作后能立刻看到真状态
+  return fetch(path, Object.assign({headers: authHeaders()}, opts)).then(async res => {
+    if (!res.ok){
+      let msg = 'HTTP ' + res.status;
+      try { const j = await res.json(); msg = j.error?.message || j.error || msg; } catch(e){}
+      throw new Error(msg);
+    }
+    return res.json();
+  });
+}
+function fmtTime(t){ if(!t||t==='0001-01-01T00:00:00Z') return '—'; const d=new Date(t); if(isNaN(d)) return '—';
+  const p=n=>String(n).padStart(2,'0'); return `${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }
+function fmtN(n){ const x=Number(n); return Number.isFinite(x)?x.toLocaleString('en-US'):'—'; }
+
+function toast(msg, ok){
+  const box = $('toast');
+  const el = document.createElement('div');
+  el.className = 'toast-item ' + (ok===false?'err':ok===true?'ok':'');
+  el.textContent = msg;
+  box.appendChild(el);
+  setTimeout(()=>{ el.style.opacity='0'; el.style.transition='opacity .3s'; setTimeout(()=>el.remove(), 320); }, 3400);
+}
+
+/* 页面内确认弹窗（替代可能被浏览器拦下的 confirm） */
+function askModal(msgHtml, title){
+  return new Promise(resolve => {
+    $('modal-msg').innerHTML = msgHtml;
+    $('modal-title').textContent = title || '确认操作';
+    const mask = $('modal');
+    mask.classList.remove('hidden');
+    const yes = $('modal-yes'), no = $('modal-no');
+    const done = val => { mask.classList.add('hidden'); yes.onclick = null; no.onclick = null; resolve(val); };
+    yes.onclick = () => done(true);
+    no.onclick = () => done(false);
+    yes.focus();
+  });
+}
+
+/* ---------------- 概览 / 账号 ---------------- */
+function statusOf(a){
+  if (a.disabled) return {c:'bad', t:'已停用', dot:'·'};
+  if (a.cooling) return {c:'warn', t:'冷却中', dot:'·'};
+  if (a.tested && a.connected) return {c:'ok', t:'正常' + (a.models?(' · '+a.models+' 模型'):''), dot:''};
+  if (a.tested && !a.connected) return {c:'bad', t:'连接失败', dot:'·'};
+  return {c:'grey', t:'未测试', dot:''};
+}
+
+async function loadStatus(){
+  try{
+    const d = await api('/api/status');
+    __ACCOUNTS__ = d.accounts || [];
+    $('s-total').textContent = d.total;
+    $('s-healthy').textContent = d.healthy;
+    $('s-cooling').textContent = __ACCOUNTS__.filter(a=>a.cooling).length;
+    $('s-disabled').textContent = __ACCOUNTS__.filter(a=>a.disabled).length;
+    $('hint-authdir').textContent = (d.auth_dir||'auths/').replace(/\\/g,'/').split('/').slice(-2).join('/');
+    $('m-upstream').innerHTML = '<span class="dot" style="color:#0ea5e9"></span>上游 ' + esc(d.upstream_base||'—');
+    $('m-health').innerHTML = '<span class="dot" style="color:'+(d.healthy>0?'var(--ok)':'var(--warn)')+'"></span>健康 '+esc(d.healthy)+'/'+esc(d.total);
+    renderAcctRows();
+  }catch(e){ $('m-health').innerHTML = '<span class="dot" style="color:var(--bad)"></span>状态获取失败'; }
+}
+
+function ckChip(uid){
+  const c = __CHECKIN__[uid];
+  if (!c) return '<span class="badge grey" title="当天尚无签到记录">—</span>';
+  return c.signed
+    ? '<span class="badge ok" id="ck-'+esc(uid)+'">今日已签</span>'
+    : '<span class="badge warn" id="ck-'+esc(uid)+'">今日未签</span>';
+}
+
+function renderAcctRows(){
+  const body = $('acct-body');
+  const list = __ACCOUNTS__;
+  $('acct-count').textContent = list.length ? '('+list.length+')' : '';
+  if (!list.length){ body.innerHTML = '<tr><td colspan="7" class="empty">还没有凭证 — 用上方 OAuth 授权或手动添加</td></tr>'; return; }
+  const populateSel = (uid)=>{ const sel=$('in-uid-sel'); const prev=sel.value;
+    sel.innerHTML='<option value="">自动（池轮询）</option>'+list.map(a=>'<option value="'+esc(a.uid)+'">'+esc(a.nickname||a.uid)+(a.disabled?'（已停用）':a.cooling?'（冷却中）':'')+'</option>').join('');
+    if(prev&&[...sel.options].some(o=>o.value===prev)) sel.value=prev; if(uid){ sel.value=uid; } };
+  populateSel();
+  body.innerHTML = list.map(a => {
+    const st = statusOf(a);
+    const dis = !!a.disabled;
+    return '<tr class="acct-row" data-uid="'+esc(a.uid)+'">'
+      +'<td><span class="caret" onclick="togglePkg(this)" title="套餐明细">▸</span></td>'
+      +'<td><div class="mono" style="font-size:12.5px">'+esc(a.nickname||a.uid)+'</div><div class="muted" style="font-size:11px">'+esc(a.realm||'cn')+' · '+esc(a.kind||'-')+'</div></td>'
+      +'<td><span class="badge '+st.c+'">'+esc(st.t)+'</span>'+(a.reason?'<div class="muted" style="font-size:11px;margin-top:3px" title="'+esc(a.reason)+'">'+esc(String(a.reason).slice(0,36))+'</div>':'')+'</td>'
+      +'<td class="mono"><span id="q-'+esc(a.uid)+'">—</span></td>'
+      +'<td>'+ckChip(a.uid)+'</td>'
+      +'<td><div class="row-actions">'
+      +  '<button class="btn ghost small" data-acct-act="retest" data-uid="'+esc(a.uid)+'">测试</button>'
+      +  '<button class="btn ghost small" data-acct-act="chat" data-uid="'+esc(a.uid)+'">测对话</button>'
+      +  (dis?'<button class="btn small" data-acct-act="enable" data-uid="'+esc(a.uid)+'">启用</button>'
+        :'<button class="btn danger small" data-acct-act="disable" data-uid="'+esc(a.uid)+'">停用</button>')
+      +  '<button class="btn danger small" data-acct-act="remove" data-uid="'+esc(a.uid)+'">删除</button>'
+      +'</div></td></tr>'
+      +'<tr class="pkg-cell" id="pk-'+esc(a.uid)+'"><td colspan="7"><div id="pkgc-'+esc(a.uid)+'" style="padding:8px 6px 2px"><div class="hint">点击「刷新额度」或“▸”后查看套餐明细。</div></div></td></tr>';
+  }).join('');
+  renderQuotaOnRows();
+}
+
+/* 额度：把 /api/quota/all 灌进账号行 + 总积分，并生成套餐明细 */
+let __QUOTA_CACHE__ = {};
+async function loadQuotaAll(){
+  try{
+    const d = await api('/api/quota/all');
+    const total = d.total || {};
+    if (total.real){
+      $('s-used').textContent = fmtN(total.cycle_used);
+      $('s-remain').textContent = fmtN(total.cycle_remain);
+      $('s-remain').className = 'v ' + ((total.cycle_remain||0) < 50 ? 'bad' : 'ok');
+    }
+    const list = d.accounts || [];
+    __QUOTA_CACHE__ = {};
+    list.forEach(a => { if (a.uid) __QUOTA_CACHE__[a.uid] = a; });
+    renderQuotaOnRows();
+  }catch(e){}
+}
+function renderQuotaOnRows(){
+  const list = __ACCOUNTS__ || [];
+  list.forEach(a => {
+    const q = __QUOTA_CACHE__[a.uid];
+    const el = $('q-'+a.uid);
+    if (!el) return;
+    if (!q || q.ok === false){ el.textContent = q && q.error ? '查询失败' : '—'; el.title = q&&q.error?q.error:''; return; }
+    el.innerHTML = '<strong style="color:'+(q.cycle_remain<50?'#b45309':'#15803d')+'">'+fmtN(q.cycle_remain)+'</strong> <span class="muted">剩</span> · <strong>'+fmtN(q.cycle_used)+'</strong> <span class="muted">用</span>';
+    const box = $('pkgc-'+a.uid);
+    if (box && (q.packages||[]).length){
+      box.innerHTML = (q.packages||[]).map(p => {
+        const cr=p.cycle_remain, cu=p.cycle_used, tr=p.total_remain!=null?p.total_remain:null;
+        const total=(cr||0)+(cu||0), pct=total>0?Math.max(0,Math.min(100,Math.round((cu/total)*100))):0;
+        return '<div class="pkg-box"><div class="pkg-t"><span>'+esc(p.package||'未命名套餐')+'</span><span class="muted">周期</span></div>'
+          +'<div class="bar"><i style="width:'+pct+'%"></i></div>'
+          +'<div class="pkg-m"><span>剩余 <b>'+fmtN(cr)+'</b></span><span>已用 <b>'+fmtN(cu)+'</b></span>'
+          +(tr!==null?'<span>累计剩余 <b>'+fmtN(tr)+'</b></span>':'')+'</div></div>';
+      }).join('') + '<div class="hint" style="padding-top:4px">账户级数字为准，套餐 cycle 各自独立、勿相加。</div>';
+    }
+  });
+}
+function togglePkg(caret){
+  const tr = caret.closest('tr.acct-row');
+  if (!tr) return;
+  const expanded = tr.classList.contains('exp');
+  tr.classList.toggle('exp', !expanded);
+  caret.textContent = expanded ? '▸' : '▾';
+  const uid = tr.getAttribute('data-uid');
+  if (!expanded && !__QUOTA_CACHE__[uid]) loadQuotaAll();
+}
+
+/* ---------------- 今日签到状态 ---------------- */
+async function loadCheckinStatus(){
+  try{
+    const d = await api('/api/checkin/status');
+    const map = {};
+    (d.accounts||[]).forEach(a => { if (a.uid) map[a.uid] = {signed: !!a.signed, credit: a.credit, streak: a.streak}; });
+    __CHECKIN__ = map;
+    // status 渲染早于 checkin 时行内 chip 缺失 → 整体重渲染一次以带出「今日已签/未签」
+    const anyMissing = (__ACCOUNTS__||[]).some(a => !$('ck-'+a.uid));
+    if (anyMissing) renderAcctRows();
+  }catch(e){}
+}
+async function doCheckin(){
+  const btn = $('btnCheckin'); if (btn.disabled) return;
+  btn.disabled = true; btn.textContent = '签到中…';
+  try{
+    const d = await api('/api/checkin', {method:'POST'});
+    const okR = (d.results||[]).filter(x=>x.ok);
+    if (okR.length){
+      const parts = okR.map(x => (x.credit ? ('+'+fmtN(x.credit)+' 积分') : '') + '（连签 '+(x.streak_days||1)+' 天）');
+      toast('签到成功：' + parts.join('；'), true);
+    }
+    else { const any = d.results||[]; toast(any.length ? (any[0].msg||'今天已签到') : '没有可签到的 OAuth 账号', false); }
+    await Promise.all([loadStatus(), loadCheckinStatus()]);
+  }catch(e){ toast('签到失败：' + e.message, false); }
+  finally{ btn.disabled = false; btn.textContent = '☑ 一键签到'; }
+}
+
+/* ---------------- 账号动作 ---------------- */
+async function retest(uid){ toast('测试 '+uid+' …');
+  try{ const d = await api('/api/accounts/retest?uid='+encodeURIComponent(uid), {method:'POST'}); toast((d.ok?'✓ ':'✗ ')+uid+' 连接'+(d.ok?'成功，可用 '+d.models+' 模型':'失败：'+(d.error||'')) , d.ok); loadAll(true); }
+  catch(e){ toast('测试失败：'+e.message, false); }
+}
+async function disableAcct(uid){ if(!(await askModal('停用账号 '+uid+' ？（可随时启用）'))) return;
+  try{ const d = await api('/api/accounts/disable?uid='+encodeURIComponent(uid)+'&reason='+encodeURIComponent('手动停用'), {method:'POST'});
+    if (d && d.ok){ toast('已停用 '+uid, true); } else { toast('返回异常：'+JSON.stringify(d), false); }
+    await loadStatus(); }
+  catch(e){ toast('停用失败：'+e.message, false); }
+}
+async function enableAcct(uid){ try{ const d = await api('/api/accounts/enable?uid='+encodeURIComponent(uid), {method:'POST'});
+    if (d && d.ok){ toast('已启用 '+uid, true); } else { toast('返回异常：'+JSON.stringify(d), false); }
+    await loadStatus(); }
+  catch(e){ toast('启用失败：'+e.message, false); }
+}
+async function removeAcct(uid){ if(!(await askModal('删除凭证 '+uid+'？<br>会同时删除 auths 目录下对应文件，不可恢复。','删除'))) return;
+  try{ const d = await api('/api/accounts?uid='+encodeURIComponent(uid), {method:'DELETE'});
+    if (d && d.ok){ toast('已删除 '+uid, true); } else { toast('返回异常：'+JSON.stringify(d), false); }
+    await loadStatus(); }
+  catch(e){ toast('删除失败：'+e.message, false); }
+}
+async function reload(){ try{ await api('/api/accounts/reload', {method:'POST'}); loadAll(true); } catch(e){ alert('重载失败：'+e.message); } }
+
+async function addAccount(){
+  const key = $('in-key').value.trim();
+  if (!key){ alert('请填写 API Key'); return; }
+  try{
+    const d = await api('/api/accounts', {method:'POST', body: JSON.stringify({api_key:key, uid:$('in-uid').value.trim()})});
+    $('in-key').value=''; $('in-uid').value='';
+    const t = d.test || {};
+    showResult(t.ok, t.ok?('✓ 已登录并连接成功，账号 '+d.uid+' 可用 '+t.models+' 个模型'):('已保存但连接失败：'+ (t.error||'未知错误')+'（账号 '+d.uid+'）'));
+    loadAll(true);
+  }catch(e){ showResult(false, '添加失败：'+e.message); }
+}
+async function testAccount(){
+  const key = $('in-key').value.trim();
+  if (!key){ alert('请先填写 API Key'); return; }
+  showResult(true, '正在测试连接…');
+  try{
+    const d = await api('/api/accounts/test', {method:'POST', body: JSON.stringify({api_key:key, uid:$('in-uid').value.trim()})});
+    showResult(d.ok, d.ok?('✓ 连接成功（'+d.kind+'），可用 '+d.models+' 个模型。点「添加并登录」保存'):('✗ 连接失败（'+d.kind||''+'）：'+d.error));
+    toast(d.ok?'连接成功':'连接失败：'+d.error, d.ok);
+  }catch(e){ const m='测试失败：'+e.message; showResult(false, m); toast(m, false); }
+}
+function showResult(ok, msg){ const el=$('test-result'); el.innerHTML=(ok?'<span style="color:var(--ok)">':'<span style="color:var(--bad)">')+esc(msg)+'</span>'; }
+
+/* ---------------- OAuth ---------------- */
+let oauthState=null, oauthTimer=null, oauthRealm=null;
+function setOAuth(msg, isErr){ const el=$('oauth-status'); el.innerHTML=(isErr?'<span style="color:var(--bad)">':'<span style="color:var(--ok)">')+esc(msg)+'</span>'; }
+async function startOAuth(realm){
+  if (oauthTimer){ clearTimeout(oauthTimer); oauthTimer=null; }
+  const label = realm==='cn'?'中国版 (copilot.tencent.com)':'国际版 (www.codebuddy.ai)';
+  try{
+    const d = await api('/api/auth/start?realm='+encodeURIComponent(realm||'saas'));
+    oauthState=d.state; oauthRealm=d.realm||realm||'saas';
+    window.open(d.auth_url,'_blank');
+    setOAuth('已打开'+label+'授权页，请在浏览器登录授权，本页自动检测…');
+    pollOAuth();
+  }catch(e){ setOAuth('启动失败：'+e.message, true); }
+}
+async function pollOAuth(){
+  if(!oauthState) return;
+  try{
+    const d = await api('/api/auth/poll', {method:'POST', body: JSON.stringify({state:oauthState, realm:oauthRealm})});
+    if (d.pending){ oauthTimer=setTimeout(pollOAuth, 2500); return; }
+    oauthState=null; oauthRealm=null;
+    if (d.ok){ setOAuth('✓ 已登录并连接成功（'+d.realm+'），账号 '+d.uid+' 可用 '+d.models+' 个模型'); toast('OAuth 登录成功：'+d.uid, true); loadAll(true); }
+    else setOAuth('✗ 登录失败：'+(d.error||'未知错误'), true);
+  }catch(e){ setOAuth('✗ 轮询失败：'+e.message, true); oauthState=null; oauthRealm=null; }
+}
+
+/* ---------------- 模型 / 对话 ---------------- */
+async function loadModels(){
+  try{
+    const d = await api('/api/models');
+    const list = d.data||[];
+    $('model-count').textContent = list.length ? '('+list.length+')' : '';
+    $('model-tags').innerHTML = list.length ? list.map(m=>{
+      const cf = typeof m.cost_factor==='number' ? m.cost_factor : null;
+      return '<span class="tag" data-m="'+esc(m.id)+'" onclick="pickModel(this)">'+esc(m.display_name||m.id)+(cf!==null?' <span class="hint">'+cf+'x</span>':'')+'</span>';
+    }).join('') : '<span class="hint">上游未返回模型列表</span>';
+    if (list.length && !$('in-model').value) $('in-model').value = list[0].id;
+  }catch(e){ $('model-tags').innerHTML = '<span class="hint">加载失败：'+esc(e.message)+'</span>'; }
+}
+function pickModel(el){ document.querySelectorAll('#model-tags .tag').forEach(t=>t.classList.remove('active')); el.classList.add('active'); $('in-model').value = el.dataset.m; }
+
+async function testChat(uid){ $('in-uid-sel').value = uid; if(!$('in-model').value){ alert('请等待模型列表加载，或手动填模型名'); return; } send(); }
+async function send(){
+  const model=$('in-model').value.trim(), stream=$('in-stream').checked, uid=$('in-uid-sel').value, box=$('chat');
+  if(!model){ alert('请填写模型名'); return; }
+  box.textContent = '▸ 用「'+(uid?'账号 '+uid:'自动（池轮询）')+'」请求中…\n';
+  const t0=Date.now();
+  let url = '/v1/chat/completions';
+  if (uid) url += '?uid=' + encodeURIComponent(uid);
+  try{
+    const res = await fetch(url, {method:'POST', headers: authHeaders(), body: JSON.stringify({model, stream, messages:[{role:'user', content:'用一句话介绍你自己'}]})});
+    if (!res.ok){ box.textContent = '✗ HTTP '+res.status+'\n'+await res.text(); return; }
+    if (!stream){
+      const j = await res.json();
+      box.textContent = (j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content) || JSON.stringify(j,null,2);
+      box.textContent += '\n\n— 耗时 '+(Date.now()-t0)+'ms';
+      return;
+    }
+    box.textContent='';
+    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf='';
+    while(true){
+      const {done,value} = await reader.read(); if(done) break;
+      buf += dec.decode(value,{stream:true});
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for (const p of parts){
+        const line = p.split('\n').find(l=>l.indexOf('data:')===0);
+        if(!line) continue;
+        const data = line.slice(5).trim();
+        if (data === '[DONE]'){ box.textContent += '\n\n— 流式完成，耗时 '+(Date.now()-t0)+'ms'; continue; }
+        try{ const j=JSON.parse(data); const dd=j.choices&&j.choices[0]&&j.choices[0].delta||{}; if(dd.content) box.textContent+=dd.content; box.scrollTop=box.scrollHeight; }catch(e){}
+      }
+    }
+  }catch(e){ box.textContent='✗ '+e.message; }
+}
+
+/* ---------------- 接入指引 ---------------- */
+function loadKeys(){
+  $('k-base').textContent = BASE;
+  $('k-key').textContent = apiKey ? (apiKey.slice(0,8)+'…'+apiKey.slice(-4)) : '未设置';
+  $('ex-codex').textContent =
+'[model_providers.buddy]\n'+
+'name = "CodeBuddy"\n'+
+'base_url = "'+BASE+'/v1"\n'+
+'wire_api = "responses"\n'+
+'env_key = "BUDDY_API_KEY"\n\n'+
+'[profiles.buddy]\n'+
+'model = "hy4-preview"\n'+
+'model_provider = "buddy"\n\n'+
+'# 启动前：export BUDDY_API_KEY=' + (apiKey||'你的API Key');
+  $('ex-cc').textContent =
+'{\n  "hy4-preview": {\n    "base_url": "'+BASE+'/v1/messages",\n    "api_key": "'+(apiKey||'你的API Key')+'",\n    "model": "hy4-preview"\n  }\n}';
+}
+async function copyKey(){ if(!apiKey){ toast('未配置 API Key', false); return; } try{ await navigator.clipboard.writeText(apiKey); toast('API Key 已复制', true); }catch(e){} }
+async function copyBase(){ try{ await navigator.clipboard.writeText(BASE); toast('Base URL 已复制', true); }catch(e){} }
+
+/* ---------------- 装配 ---------------- */
+function loadAll(quiet){ if(!quiet) toast('刷新中…'); loadStatus(); loadModels(); loadQuotaAll(); loadKeys(); loadCheckinStatus(); }
+window.togglePkg = togglePkg;
+window.pickModel = pickModel;
+window.startOAuth = startOAuth;
+window.testChat = testChat;
+window.testAccount = testAccount;
+window.addAccount = addAccount;
+window.retest = retest;
+window.disableAcct = disableAcct;
+window.enableAcct = enableAcct;
+window.removeAcct = removeAcct;
+window.reload = reload;
+window.send = send;
+window.copyKey = copyKey;
+window.copyBase = copyBase;
+window.loadAll = loadAll;
+window.doCheckin = doCheckin;
+
+/* 账号行按钮：事件委托（不依赖内联 onclick 的全局作用域） */
+document.addEventListener('click', function(e){
+  const b = e.target && e.target.closest ? e.target.closest('[data-acct-act]') : null;
+  if (!b || !document.body.contains($('acct-body'))) return;
+  const act = b.getAttribute('data-acct-act');
+  const uid = b.getAttribute('data-uid') || '';
+  try{
+    if (act === 'disable') disableAcct(uid);
+    else if (act === 'enable') enableAcct(uid);
+    else if (act === 'remove') removeAcct(uid);
+    else if (act === 'retest') retest(uid);
+    else if (act === 'chat') testChat(uid);
+  }catch(err){ toast('操作异常：' + (err && err.message || err), false); }
+});
+
+/* 任何未捕获错误都变成可见 toast，方便定位“点了没反应” */
+window.addEventListener('error', function(ev){ try{ toast('页面错误：' + (ev.message || 'unknown'), false); }catch(_){} });
+window.addEventListener('unhandledrejection', function(ev){ try{ const r = ev.reason; toast('请求错误：' + (r && r.message || r || 'unknown'), false); }catch(_){} });
+
+loadAll();
+setInterval(function(){ if(!document.hidden) loadAll(true); }, 30000);
+})();
+</script>
+</body>
+</html>
