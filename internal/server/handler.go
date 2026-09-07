@@ -1011,7 +1011,10 @@ func (h *Handler) usageCallback(uid string) func(map[string]any) {
 // 本期/总量 已用与剩余；最终 total 为所有账号的实时总积分。
 func (h *Handler) apiQuotaAll(w http.ResponseWriter, r *http.Request) {
 	statuses := h.cfg.Pool.List()
-	accounts := make([]map[string]any, 0, len(statuses))
+	// 并发拉取：上游配额接口单次 ~2.2s，串行会随账号数线性变慢
+	// （2 号 ~5s、4 号 ~10s）。改为每账号一个 goroutine 同时发，
+	// 总耗时 ≈ 最慢的那一个；结果按原顺序写回，保持响应结构不变。
+	rows := make([]map[string]any, len(statuses))
 	total := map[string]any{
 		"cycle_used":   0.0,
 		"cycle_remain": 0.0,
@@ -1019,69 +1022,92 @@ func (h *Handler) apiQuotaAll(w http.ResponseWriter, r *http.Request) {
 		"total_remain": 0.0,
 		"real":         false,
 	}
-	for _, st := range statuses {
-		row := map[string]any{"uid": st.UID, "nickname": st.Nickname}
-		acct := h.cfg.Pool.AuthByUID(st.UID)
-		if acct == nil {
-			row["ok"] = false
-			row["error"] = "account not found"
-			accounts = append(accounts, row)
-			continue
-		}
-		row["realm"] = acct.Realm
-		rlm := h.realmFor(acct)
-		token, err := acct.EnsureToken(h.cfg.TokenURL, h.cfg.ClientID)
-		if err != nil {
-			if cred.IsAuthInvalid(err) {
-				h.cfg.Pool.Disable(acct.UID, "auth invalid (re-login required)")
+	var wg sync.WaitGroup
+	for i, st := range statuses {
+		wg.Add(1)
+		go func(i int, st pool.Status) {
+			defer wg.Done()
+			row := map[string]any{"uid": st.UID, "nickname": st.Nickname}
+			acct := h.cfg.Pool.AuthByUID(st.UID)
+			if acct == nil {
+				row["ok"] = false
+				row["error"] = "account not found"
+				rows[i] = row
+				return
 			}
-			row["ok"] = false
-			row["error"] = err.Error()
-			accounts = append(accounts, row)
-			continue
-		}
-		info, err := h.cfg.Upstream.FetchQuota(r.Context(), rlm.Base, token, rlm.Headers)
-		if err != nil {
-			row["ok"] = false
-			row["error"] = err.Error()
-			accounts = append(accounts, row)
-			continue
-		}
-		row["payment_type"] = info.PaymentType
-		res := info.Resource
-		if res != nil && len(res.Accounts) > 0 {
-			var cu, cr, tu, tr float64
-			pkgs := make([]map[string]any, 0, len(res.Accounts))
-			for _, a := range res.Accounts {
-				cu += a.CycleCapacityUsed
-				cr += a.CycleCapacityRemain
-				tu += a.CapacityUsed
-				tr += a.CapacityRemain
-				pkgs = append(pkgs, map[string]any{
-					"package":      a.PackageName,
-					"cycle_used":   a.CycleCapacityUsed,
-					"cycle_remain": a.CycleCapacityRemain,
-					"total_used":   a.CapacityUsed,
-					"total_remain": a.CapacityRemain,
-				})
+			row["realm"] = acct.Realm
+			rlm := h.realmFor(acct)
+			token, err := acct.EnsureToken(h.cfg.TokenURL, h.cfg.ClientID)
+			if err != nil {
+				if cred.IsAuthInvalid(err) {
+					h.cfg.Pool.Disable(acct.UID, "auth invalid (re-login required)")
+				}
+				row["ok"] = false
+				row["error"] = err.Error()
+				rows[i] = row
+				return
 			}
-			row["ok"] = true
-			row["cycle_used"] = cu
-			row["cycle_remain"] = cr
-			row["total_used"] = tu
-			row["total_remain"] = tr
-			row["packages"] = pkgs
-			total["cycle_used"] = total["cycle_used"].(float64) + cu
-			total["cycle_remain"] = total["cycle_remain"].(float64) + cr
-			total["total_used"] = total["total_used"].(float64) + tu
-			total["total_remain"] = total["total_remain"].(float64) + tr
-			total["real"] = true
-		} else {
-			// 上游无真实余额接口：仅给出套餐信息，余额标记为估算缺失。
-			row["ok"] = true
-			row["estimated"] = true
+			info, err := h.cfg.Upstream.FetchQuota(r.Context(), rlm.Base, token, rlm.Headers)
+			if err != nil {
+				row["ok"] = false
+				row["error"] = err.Error()
+				rows[i] = row
+				return
+			}
+			row["payment_type"] = info.PaymentType
+			res := info.Resource
+			if res != nil && len(res.Accounts) > 0 {
+				var cu, cr, tu, tr float64
+				pkgs := make([]map[string]any, 0, len(res.Accounts))
+				for _, a := range res.Accounts {
+					cu += a.CycleCapacityUsed
+					cr += a.CycleCapacityRemain
+					tu += a.CapacityUsed
+					tr += a.CapacityRemain
+					pkgs = append(pkgs, map[string]any{
+						"package":      a.PackageName,
+						"cycle_used":   a.CycleCapacityUsed,
+						"cycle_remain": a.CycleCapacityRemain,
+						"total_used":   a.CapacityUsed,
+						"total_remain": a.CapacityRemain,
+					})
+				}
+				row["ok"] = true
+				row["cycle_used"] = cu
+				row["cycle_remain"] = cr
+				row["total_used"] = tu
+				row["total_remain"] = tr
+				row["packages"] = pkgs
+			} else {
+				// 上游无真实余额接口：仅给出套餐信息，余额标记为估算缺失。
+				row["ok"] = true
+				row["estimated"] = true
+			}
+			rows[i] = row
+		}(i, st)
+	}
+	wg.Wait()
+	accounts := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		if row == nil {
+			continue
 		}
 		accounts = append(accounts, row)
+		if ok, _ := row["ok"].(bool); ok {
+			if cu, ok2 := row["cycle_used"].(float64); ok2 {
+				total["cycle_used"] = total["cycle_used"].(float64) + cu
+			}
+			if cr, ok2 := row["cycle_remain"].(float64); ok2 {
+				total["cycle_remain"] = total["cycle_remain"].(float64) + cr
+			}
+			if tu, ok2 := row["total_used"].(float64); ok2 {
+				total["total_used"] = total["total_used"].(float64) + tu
+			}
+			if tr, ok2 := row["total_remain"].(float64); ok2 {
+				total["total_remain"] = total["total_remain"].(float64) + tr
+			}
+			total["real"] = true
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,
