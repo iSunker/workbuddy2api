@@ -125,6 +125,14 @@ type Handler struct {
 	models     []upstream.Model
 	modelsSeen map[string]bool
 	fetchedAt  time.Time
+
+	// quotaAll 缓存：上游 4 个计费接口串行约 2.5s/账号，额度页 60s 轮询
+	// 会持续打满上游。缓存 45s TTL，刷新期间并发请求共享同一次拉取。
+	quotaMu       sync.Mutex
+	quotaAllCache []byte
+	quotaAllAt    time.Time
+	quotaFetching bool
+	quotaWaiters  []chan []byte
 }
 
 const modelsTTL = time.Hour
@@ -188,6 +196,11 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("GET /admin", h.serveAdmin)
 	h.mux.HandleFunc("GET /admin/", h.serveAdmin)
 	h.mux.HandleFunc("/", h.serveIndex)
+
+	// 临期优先选号：后台定期拉每号套餐到期信息写回 pool（看板关着也生效）
+	if cfg.Pool != nil && cfg.Upstream != nil {
+		go h.expiryLoop()
+	}
 
 	return h
 }
@@ -287,32 +300,48 @@ func (h *Handler) effectiveModels() []upstream.Model {
 	}
 	h.modelsMu.RUnlock()
 
-	acct := h.cfg.Pool.Pick()
-	if acct == nil {
-		return upstream.FallbackModels()
-	}
-	rlm := h.realmFor(acct)
-	token, err := acct.EnsureToken(h.cfg.TokenURL, h.cfg.ClientID)
-	if err != nil {
-		if cred.IsAuthInvalid(err) {
-			h.cfg.Pool.Disable(acct.UID, "auth invalid (re-login required)")
+	// 模型表按账号逐个尝试（最多 MaxRotate 个 healthy 号），取第一个非空结果。
+	// 不能只 Pick() 一个号：临期优先会长期钉在最早到期号上，若该号上游
+	// 模型列表为空（不同账号套餐/订阅可见模型不同），模型表会一直拿不到。
+	tried := map[string]bool{}
+	var lastErr error
+	for i := 0; i < h.cfg.MaxRotate; i++ {
+		acct := h.cfg.Pool.PickExcluding(tried)
+		if acct == nil {
+			break
 		}
-		return upstream.FallbackModels()
+		tried[acct.UID] = true
+		rlm := h.realmFor(acct)
+		token, err := acct.EnsureToken(h.cfg.TokenURL, h.cfg.ClientID)
+		if err != nil {
+			if cred.IsAuthInvalid(err) {
+				h.cfg.Pool.Disable(acct.UID, "auth invalid (re-login required)")
+			} else {
+				lastErr = err
+			}
+			continue
+		}
+		ms, err := h.cfg.Upstream.FetchModelsRealm(context.Background(), rlm.Base, token, rlm.Headers, rlm.ModelsPaths...)
+		if err != nil || len(ms) == 0 {
+			lastErr = err
+			continue
+		}
+		// 成功拉到非空模型表：缓存并返回
+		h.modelsMu.Lock()
+		h.models = ms
+		h.fetchedAt = time.Now()
+		h.modelsSeen = map[string]bool{}
+		for _, m := range ms {
+			h.modelsSeen[m.ID] = true
+		}
+		h.modelsMu.Unlock()
+		return ms
 	}
-	ms, err := h.cfg.Upstream.FetchModelsRealm(context.Background(), rlm.Base, token, rlm.Headers, rlm.ModelsPaths...)
-	if err != nil || len(ms) == 0 {
-		log.Printf("models: fetch failed (%v), using fallback table", err)
-		return upstream.FallbackModels()
+	// 所有 healthy 号都拉空/失败 → 用兜底模型表
+	if lastErr != nil {
+		log.Printf("models: all accounts fetch failed (%v), using fallback table", lastErr)
 	}
-	h.modelsMu.Lock()
-	h.models = ms
-	h.fetchedAt = time.Now()
-	h.modelsSeen = map[string]bool{}
-	for _, m := range ms {
-		h.modelsSeen[m.ID] = true
-	}
-	h.modelsMu.Unlock()
-	return ms
+	return upstream.FallbackModels()
 }
 
 type chatRequest struct {
@@ -518,6 +547,10 @@ func (h *Handler) forwardStream(ctx context.Context, payload []byte, prefUID str
 					h.cfg.Pool.Disable(acct.UID, "credential rejected")
 				case upstream.ErrNotFound:
 					h.cfg.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
+				case upstream.ErrContentRejected:
+					// 内容审核拒绝：用户侧问题，换账号重试无意义且不该惩罚账号
+					// （旧行为会走 ErrHardCredit 把账号冷却 12h）。直接把 422 交回调用方。
+					return nil, nil, http.StatusUnprocessableEntity, err
 				case upstream.ErrClient:
 					// 模型/通道不被该账号批准（如 11128 unapproved channel）：
 					// 往往是该 realm 不支持当前模型，换成另一个账号/realm 重试通常能成功，
@@ -1009,7 +1042,158 @@ func (h *Handler) usageCallback(uid string) func(map[string]any) {
 // apiQuotaAll 拉取池内所有账号的上游真实余额，并按账号聚合并给出总积分。
 // 每个账号调用一次 FetchQuota（含 get-user-resource），累加各资源包的
 // 本期/总量 已用与剩余；最终 total 为所有账号的实时总积分。
+const quotaAllTTL = 45 * time.Second
+
+// apiQuotaAll 返回全账号额度（带 45s TTL 缓存与 single-flight 合并）。
+// 首次未命中时同步拉取；刷新期间其他请求等待共享结果，避免穿透。
 func (h *Handler) apiQuotaAll(w http.ResponseWriter, r *http.Request) {
+	h.quotaMu.Lock()
+	if h.quotaAllCache != nil && time.Since(h.quotaAllAt) < quotaAllTTL {
+		data := h.quotaAllCache
+		h.quotaMu.Unlock()
+		writeCachedJSON(w, data)
+		return
+	}
+	if h.quotaFetching {
+		ch := make(chan []byte, 1)
+		h.quotaWaiters = append(h.quotaWaiters, ch)
+		h.quotaMu.Unlock()
+		select {
+		case data := <-ch:
+			writeCachedJSON(w, data)
+		case <-r.Context().Done():
+		}
+		return
+	}
+	h.quotaFetching = true
+	h.quotaMu.Unlock()
+
+	data := h.fetchQuotaAll(r)
+
+	h.quotaMu.Lock()
+	h.quotaAllCache = data
+	h.quotaAllAt = time.Now()
+	h.quotaFetching = false
+	for _, ch := range h.quotaWaiters {
+		select {
+		case ch <- data:
+		default:
+		}
+	}
+	h.quotaWaiters = nil
+	h.quotaMu.Unlock()
+
+	writeCachedJSON(w, data)
+}
+
+// fetchQuotaAll 实际拉取全账号额度（apiQuotaAll 的缓存未命中路径）。
+// fetchAccountQuota 拉取单账号套餐/额度信息（ensure token + realm 上游调用）。
+func (h *Handler) fetchAccountQuota(ctx context.Context, acct *cred.Cred) (*upstream.QuotaInfo, error) {
+	if acct == nil {
+		return nil, errors.New("account not found")
+	}
+	rlm := h.realmFor(acct)
+	token, err := acct.EnsureToken(h.cfg.TokenURL, h.cfg.ClientID)
+	if err != nil {
+		return nil, err
+	}
+	return h.cfg.Upstream.FetchQuota(ctx, rlm.Base, token, rlm.Headers)
+}
+
+// expiryLoop 临期刷新守护：启动后先跑一轮，之后每 6 分钟刷新一次。
+func (h *Handler) expiryLoop() {
+	defer func() { _ = recover() }()
+	time.Sleep(8 * time.Second)
+	for {
+		h.refreshExpiries()
+		time.Sleep(6 * time.Minute)
+	}
+}
+
+// refreshExpiries 遍历 healthy 账号拉套餐，把「带余额套餐最早到期时间」写进 pool。
+func (h *Handler) refreshExpiries() {
+	ctx := context.Background()
+	statuses := h.cfg.Pool.List()
+	var wg sync.WaitGroup
+	for _, st := range statuses {
+		if st.Disabled {
+			continue
+		}
+		wg.Add(1)
+		go func(uid string) {
+			defer wg.Done()
+			acct := h.cfg.Pool.AuthByUID(uid)
+			if acct == nil {
+				return
+			}
+			info, err := h.fetchAccountQuota(ctx, acct)
+			if err != nil {
+				return
+			}
+			if exp, ok := accountExpire(info.Resource); ok {
+				h.cfg.Pool.SetExpireAt(uid, exp)
+			} else {
+				h.cfg.Pool.SetExpireAt(uid, time.Time{})
+			}
+		}(st.UID)
+	}
+	wg.Wait()
+}
+
+// accountExpire 计算带余额套餐中最早到期时间；无套餐/全空返回 (zero,false)。
+func accountExpire(res *upstream.ResourceInfo) (time.Time, bool) {
+	if res == nil {
+		return time.Time{}, false
+	}
+	var best time.Time
+	found := false
+	for _, a := range res.Accounts {
+		// 只统计本周期仍有余额（CycleCapacityRemain>0）的套餐
+		if a.CycleCapacityRemain <= 0 {
+			continue
+		}
+		t, ok := parseCycleEnd(a.CycleEndTime)
+		if !ok {
+			continue
+		}
+		if !found || t.Before(best) {
+			best = t
+			found = true
+		}
+	}
+	return best, found
+}
+
+// parseCycleEnd 解析上游套餐到期时间（字符串日期 / 时间戳）。
+func parseCycleEnd(v any) (time.Time, bool) {
+	switch x := v.(type) {
+	case string:
+		if x == "" {
+			return time.Time{}, false
+		}
+		for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02T15:04:05Z07:00", "2006-01-02T15:04:05", "2006-01-02", time.RFC3339} {
+			if t, err := time.ParseInLocation(layout, x, time.Local); err == nil {
+				return t, true
+			}
+		}
+		return time.Time{}, false
+	case float64:
+		sec := int64(x)
+		if sec > 1e12 {
+			sec /= 1000
+		}
+		return time.Unix(sec, 0), true
+	case int64:
+		sec := x
+		if sec > 1e12 {
+			sec /= 1000
+		}
+		return time.Unix(sec, 0), true
+	}
+	return time.Time{}, false
+}
+
+func (h *Handler) fetchQuotaAll(r *http.Request) []byte {
 	statuses := h.cfg.Pool.List()
 	// 并发拉取：上游配额接口单次 ~2.2s，串行会随账号数线性变慢
 	// （2 号 ~5s、4 号 ~10s）。改为每账号一个 goroutine 同时发，
@@ -1036,19 +1220,11 @@ func (h *Handler) apiQuotaAll(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			row["realm"] = acct.Realm
-			rlm := h.realmFor(acct)
-			token, err := acct.EnsureToken(h.cfg.TokenURL, h.cfg.ClientID)
+			info, err := h.fetchAccountQuota(r.Context(), acct)
 			if err != nil {
 				if cred.IsAuthInvalid(err) {
 					h.cfg.Pool.Disable(acct.UID, "auth invalid (re-login required)")
 				}
-				row["ok"] = false
-				row["error"] = err.Error()
-				rows[i] = row
-				return
-			}
-			info, err := h.cfg.Upstream.FetchQuota(r.Context(), rlm.Base, token, rlm.Headers)
-			if err != nil {
 				row["ok"] = false
 				row["error"] = err.Error()
 				rows[i] = row
@@ -1064,12 +1240,17 @@ func (h *Handler) apiQuotaAll(w http.ResponseWriter, r *http.Request) {
 					cr += a.CycleCapacityRemain
 					tu += a.CapacityUsed
 					tr += a.CapacityRemain
+					end := ""
+					if t, ok := parseCycleEnd(a.CycleEndTime); ok {
+						end = t.Format("2006-01-02")
+					}
 					pkgs = append(pkgs, map[string]any{
 						"package":      a.PackageName,
 						"cycle_used":   a.CycleCapacityUsed,
 						"cycle_remain": a.CycleCapacityRemain,
 						"total_used":   a.CapacityUsed,
 						"total_remain": a.CapacityRemain,
+						"cycle_end":    end,
 					})
 				}
 				row["ok"] = true
@@ -1078,6 +1259,13 @@ func (h *Handler) apiQuotaAll(w http.ResponseWriter, r *http.Request) {
 				row["total_used"] = tu
 				row["total_remain"] = tr
 				row["packages"] = pkgs
+				if exp, ok := accountExpire(res); ok {
+					h.cfg.Pool.SetExpireAt(acct.UID, exp)
+					row["expire_at"] = exp.Format("2006-01-02 15:04:05")
+				} else {
+					h.cfg.Pool.SetExpireAt(acct.UID, time.Time{})
+					row["expire_at"] = ""
+				}
 			} else {
 				// 上游无真实余额接口：仅给出套餐信息，余额标记为估算缺失。
 				row["ok"] = true
@@ -1109,11 +1297,23 @@ func (h *Handler) apiQuotaAll(w http.ResponseWriter, r *http.Request) {
 			total["real"] = true
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	out, err := json.Marshal(map[string]any{
 		"ok":       true,
 		"accounts": accounts,
 		"total":    total,
 	})
+	if err != nil {
+		out, _ = json.Marshal(map[string]any{"ok": false, "error": "marshal: " + err.Error()})
+	}
+	return out
+}
+
+// writeCachedJSON 输出缓存的 JSON 响应。
+func writeCachedJSON(w http.ResponseWriter, data []byte) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
 }
 
 // apiQuotaUsage 仅返回本地累计消耗快照（不访问上游）。
@@ -1152,6 +1352,10 @@ func statusForKind(kind upstream.ErrKind, upstreamStatus int) int {
 		return http.StatusUnauthorized
 	case upstream.ErrNotFound:
 		return http.StatusNotFound
+	case upstream.ErrContentRejected:
+		// 内容审核拒绝：既不是限流（429）也不是欠费（402/429），
+		// 422 Unprocessable Entity 才是语义正确的状态码。
+		return http.StatusUnprocessableEntity
 	default:
 		if upstreamStatus >= 400 && upstreamStatus < 600 {
 			return upstreamStatus

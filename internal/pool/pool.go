@@ -1,7 +1,9 @@
 // Package pool 账号池：内存索引 + 冷却/禁用状态机 + state.json 持久化。
 //
-// 选号策略：healthy 中按「错误数升序 → 最久未使用优先」挑选，
-// 既避开故障号，又把所有请求均匀分摊到多个凭证上（防单号限流）。
+// 选号策略：优先「临期优先」——healthy 中带额度且最早到期的账号先选
+//（expireAt 越早越优先），避免套餐/额度到期作废；到期信息缺失或
+// 并列时退化为「错误数升序 → 最久未使用优先」（LRU），仍然避开故障号、
+// 在到期日相同的号间均匀分摊。
 package pool
 
 import (
@@ -37,6 +39,7 @@ type Status struct {
 	ErrCount int       `json:"err_count,omitempty"`
 	LastUsed time.Time `json:"last_used,omitempty"`
 	LastOK   time.Time `json:"last_ok,omitempty"`
+	ExpireAt time.Time `json:"expire_at,omitempty"` // 带额度套餐中最早到期时间（临期优先依据）
 
 	// 连接探测结果（内存态，不持久化）。
 	Connected bool `json:"connected,omitempty"` // 最近一次测试连接是否成功
@@ -52,6 +55,7 @@ type entry struct {
 	errCount int
 	lastUsed time.Time
 	lastOK   time.Time
+	expireAt time.Time // 带余额套餐最早到期；zero = 无/未知
 	// 连接探测结果（内存态）。
 	connected  bool
 	modelCount int
@@ -78,6 +82,7 @@ type acctState struct {
 	ErrCount int       `json:"err_count,omitempty"`
 	LastUsed time.Time `json:"last_used,omitempty"`
 	LastOK   time.Time `json:"last_ok,omitempty"`
+	ExpireAt time.Time `json:"expire_at,omitempty"`
 }
 
 type stateFile struct {
@@ -116,6 +121,7 @@ func (p *Pool) applySaved(e *entry, uid string) {
 		e.errCount = s.ErrCount
 		e.lastUsed = s.LastUsed
 		e.lastOK = s.LastOK
+		e.expireAt = s.ExpireAt
 	}
 }
 
@@ -170,7 +176,7 @@ func (p *Pool) PickExcluding(tried map[string]bool) *cred.Cred {
 		if !e.healthy(now) {
 			continue
 		}
-		if best == nil || better(e, best) {
+		if best == nil || pickPrefer(e, best) {
 			best = e
 		}
 	}
@@ -181,6 +187,19 @@ func (p *Pool) PickExcluding(tried map[string]bool) *cred.Cred {
 	p.seq++
 	best.seq = p.seq
 	return best.c
+}
+
+// pickPrefer 临期优先：带到期信息的 healthy 号优先；到期越早越先。
+// 同到期（或都无到期）时退化为 better()（错误数升序 → 最久未用）。
+func pickPrefer(a, b *entry) bool {
+	az, bz := a.expireAt.IsZero(), b.expireAt.IsZero()
+	if az != bz {
+		return !az // 有到期的优先于无/未知到期
+	}
+	if !az && !bz && !a.expireAt.Equal(b.expireAt) {
+		return a.expireAt.Before(b.expireAt) // 到期更早的先烧
+	}
+	return better(a, b)
 }
 
 // better 排序规则：错误数少的优先；相同则最久未使用的优先；
@@ -230,6 +249,20 @@ func (p *Pool) Enable(uid string) bool {
 	e.until = time.Time{}
 	e.reason = ""
 	e.errCount = 0
+	p.saveLocked()
+	return true
+}
+
+// SetExpireAt 记录该账号带余额套餐的最早到期时间（临期优先选号依据）；
+// 传入 zero time 表示「无可用/未知到期」，令其退化为 LRU 档。
+func (p *Pool) SetExpireAt(uid string, at time.Time) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return false
+	}
+	e.expireAt = at
 	p.saveLocked()
 	return true
 }
@@ -342,6 +375,7 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		ErrCount: e.errCount,
 		LastUsed: e.lastUsed,
 		LastOK:   e.lastOK,
+		ExpireAt: e.expireAt,
 
 		Connected: e.connected,
 		Models:    e.modelCount,
@@ -408,6 +442,7 @@ func (p *Pool) saveLocked() {
 			ErrCount: e.errCount,
 			LastUsed: e.lastUsed,
 			LastOK:   e.lastOK,
+			ExpireAt: e.expireAt,
 		}
 	}
 	raw, err := json.MarshalIndent(sf, "", "  ")

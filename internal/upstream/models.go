@@ -273,6 +273,7 @@ func FallbackModels() []Model {
 		{ID: "hy3", DisplayName: "混元 Hy3", CostFactor: 0.00},
 		{ID: "hy4-preview", DisplayName: "混元 Hy4-Preview", CostFactor: 0.00},
 		{ID: "deepseek-v4-flash", DisplayName: "DeepSeek-V4-Flash", CostFactor: 0.17},
+		{ID: "deepseek-v4.1-flash", DisplayName: "DeepSeek-V4.1-Flash", CostFactor: 0.03},
 		{ID: "deepseek-v4-pro", DisplayName: "DeepSeek-V4-Pro", CostFactor: 0.51},
 		{ID: "deepseek-v3", DisplayName: "DeepSeek-V3"},
 		{ID: "deepseek-v3.2", DisplayName: "DeepSeek-V3.2"},

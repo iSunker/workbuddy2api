@@ -19,6 +19,7 @@ const (
 	ErrNotFound             // 404 → 短冷却，不累计 errCount（防雪崩）
 	ErrServer               // 5xx
 	ErrClient               // 其他 4xx
+	ErrContentRejected      // 内容审核拒绝（11140 request illegal）— 用户侧问题，不冷却账号
 )
 
 func (k ErrKind) String() string {
@@ -37,6 +38,8 @@ func (k ErrKind) String() string {
 		return "server"
 	case ErrClient:
 		return "client"
+	case ErrContentRejected:
+		return "content_rejected"
 	default:
 		return "none"
 	}
@@ -105,6 +108,12 @@ func Classify(status int, body string) ErrKind {
 		return ErrTokenExpired
 	}
 	if status == 403 {
+		// 11140 = 上游内容审核拒绝（"内容未通过安全审核，请调整后重试"）。
+		// 此前 403 无差别判 ErrHardCredit，导致：① 客户端收到假 429「余额不足」误导排查；
+		// ② 账号被误冷却 12h。内容审核是用户侧问题，与配额无关，必须优先识别。
+		if extractCode([]byte(body)) == contentRejectedCode {
+			return ErrContentRejected
+		}
 		for _, m := range deadMarkers {
 			if strings.Contains(lower, m) {
 				return ErrSessionDead
@@ -140,6 +149,9 @@ func IsKind(err error, kind ErrKind) bool {
 	}
 	return false
 }
+
+// contentRejectedCode 上游内容审核拒绝的业务码（403 + 11140）。
+const contentRejectedCode = 11140
 
 // modelChannelBlockedCodes 上游用这些业务码表达「该账号/通道不批准此模型或调用」。
 // 典型如 11128（Illegal API invocation from an unapproved channel / first message is not system），
