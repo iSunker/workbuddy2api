@@ -244,11 +244,10 @@ pre{background:rgba(10,12,31,.05);border:1px solid var(--line);border-radius:var
         <span class="chip">Base URL：<b id="k-base">-</b></span>
         <span class="chip">API Key：<b id="k-key">-</b></span>
       </div>
-      <div class="hint" style="margin-bottom:8px"><b>Codex CLI</b> — <span class="mono">~/.codex/config.toml</span>：</div>
-      <pre class="mono" id="ex-codex"></pre>
-      <div class="hint" style="margin-top:12px;margin-bottom:8px"><b>Claude Code / CC Switch</b> — provider 配置：</div>
-      <pre class="mono" id="ex-cc"></pre>
-      <div class="hint" style="margin-top:10px">鉴权：<span class="mono">Authorization: Bearer &lt;API Key&gt;</span>（或 <span class="mono">x-api-key</span>）。端点表：<span class="mono">/v1/chat/completions</span>（OpenAI Chat）、<span class="mono">/v1/responses</span>（Codex）、<span class="mono">/v1/messages</span>（Claude Code）。</div>
+      <div class="hint" style="margin-bottom:8px"><b>OpenAI Chat 客户端</b>（Cherry Studio / LobeChat / NextChat / Open WebUI 等）— 把上面两项填进客户端即可，模型名填 <span class="mono">/v1/models</span> 返回的 <span class="mono">id</span>：</div>
+      <pre class="mono" id="ex-curl"></pre>
+      <div class="hint" style="margin-top:12px;margin-bottom:8px"><b>Claude Code / Codex CLI</b> — <b>不能直连本网关</b>：本网关只提供 OpenAI Chat，<span class="mono">/v1/messages</span>、<span class="mono">/v1/messages/count_tokens</span>、<span class="mono">/v1/responses</span> 已下线（请求返回 <span class="mono">410 Gone</span>）。请先在中间套一层转换层（CC Switch / claude-code-router / LiteLLM）把 Anthropic / Responses 转成 OpenAI Chat，再让转换层把 Base URL 指向本网关。</div>
+      <div class="hint" style="margin-top:10px">鉴权：<span class="mono">Authorization: Bearer &lt;API Key&gt;</span>（或 <span class="mono">x-api-key</span>）。端点表：<span class="mono">POST /v1/chat/completions</span>（OpenAI Chat）、<span class="mono">GET /v1/models</span>；其余协议端点一律 <span class="mono">410 Gone</span>。</div>
     </div>
   </div>
 </div>
@@ -585,23 +584,18 @@ async function send(){
 
 /* ---------------- 接入指引 ---------------- */
 function loadKeys(){
-  $('k-base').textContent = BASE;
+  $('k-base').textContent = BASE+'/v1';
   $('k-key').textContent = apiKey ? (apiKey.slice(0,8)+'…'+apiKey.slice(-4)) : '未设置';
-  $('ex-codex').textContent =
-'[model_providers.buddy]\n'+
-'name = "CodeBuddy"\n'+
-'base_url = "'+BASE+'/v1"\n'+
-'wire_api = "responses"\n'+
-'env_key = "BUDDY_API_KEY"\n\n'+
-'[profiles.buddy]\n'+
-'model = "hy4-preview"\n'+
-'model_provider = "buddy"\n\n'+
-'# 启动前：export BUDDY_API_KEY=' + (apiKey||'你的API Key');
-  $('ex-cc').textContent =
-'{\n  "hy4-preview": {\n    "base_url": "'+BASE+'/v1/messages",\n    "api_key": "'+(apiKey||'你的API Key')+'",\n    "model": "hy4-preview"\n  }\n}';
+  $('ex-curl').textContent =
+'curl '+BASE+'/v1/chat/completions \\\n'+
+'  -H "Authorization: Bearer '+(apiKey||'你的API Key')+'" \\\n'+
+'  -H "Content-Type: application/json" \\\n'+
+'  -d \'{"model":"hy4-preview","messages":[{"role":"user","content":"你好"}]}\'\n\n'+
+'# 流式：请求体加 "stream": true（上游只支持流式，本服务自动聚合非流式）\n'+
+'# Claude Code / Codex CLI 不能直连；需先经转换层转成 OpenAI Chat（见下）';
 }
 async function copyKey(){ if(!apiKey){ toast('未配置 API Key', false); return; } try{ await navigator.clipboard.writeText(apiKey); toast('API Key 已复制', true); }catch(e){} }
-async function copyBase(){ try{ await navigator.clipboard.writeText(BASE); toast('Base URL 已复制', true); }catch(e){} }
+async function copyBase(){ try{ await navigator.clipboard.writeText(BASE+'/v1'); toast('Base URL 已复制', true); }catch(e){} }
 
 /* ---------------- 装配 ---------------- */
 function loadAll(quiet){ if(!quiet) toast('刷新中…'); loadStatus(); loadModels(); loadQuotaAll(); loadKeys(); loadCheckinStatus(); }

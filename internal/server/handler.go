@@ -159,15 +159,18 @@ func NewHandler(cfg Config) *Handler {
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), modelsSeen: map[string]bool{}}
 
-	// OpenAI 兼容 API
+	// OpenAI 兼容 API（本网关只对外提供 OpenAI Chat，见 README「客户端接入」）
 	h.mux.HandleFunc("POST /v1/chat/completions", requireAPIKey(cfg.APIKey, h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", requireAPIKey(cfg.APIKey, h.listModels))
 
-	// OpenAI Responses（Codex CLI 走这个）
-	h.mux.HandleFunc("POST /v1/responses", requireAPIKey(cfg.APIKey, h.responsesAPI))
-	// Anthropic Messages（Claude Code / CC Switch 走这个）
-	h.mux.HandleFunc("POST /v1/messages", requireAPIKey(cfg.APIKey, h.anthropicMessages))
-	h.mux.HandleFunc("POST /v1/messages/count_tokens", requireAPIKey(cfg.APIKey, h.anthropicCountTokens))
+	// 已下线的协议端点：返回 410 Gone + 迁移提示（而不是 404，
+	// 避免客户端误以为路径写错而反复重试）。Claude Code / Codex CLI 不能直连
+	// 本网关，需先经转换层（CC Switch / claude-code-router / LiteLLM）转成
+	// OpenAI Chat。转换实现（upstream/anthropic.go、responses.go）保留在代码里，
+	// 供测试与将来恢复使用。
+	h.mux.HandleFunc("POST /v1/responses", requireAPIKey(cfg.APIKey, h.retiredProtocol("Responses 协议（Codex CLI）")))
+	h.mux.HandleFunc("POST /v1/messages", requireAPIKey(cfg.APIKey, h.retiredProtocol("Anthropic Messages 协议（Claude Code）")))
+	h.mux.HandleFunc("POST /v1/messages/count_tokens", requireAPIKey(cfg.APIKey, h.retiredProtocol("Anthropic Messages 协议（Claude Code）")))
 
 	// 健康检查（不认证，给容器 healthcheck 用）
 	h.mux.HandleFunc("GET /healthz", h.healthz)
@@ -207,6 +210,25 @@ func NewHandler(cfg Config) *Handler {
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
+}
+
+// retiredProtocol 生成已下线协议端点的处理器：恒定 410 Gone。
+//
+// 为什么是 410 而不是 404/400：
+//   - 404 会让客户端/用户以为「地址配错了」而反复改配置重试；
+//   - 400 会被当成参数问题；
+//   - 410 Gone 语义是「该端点曾存在、现已永久下线」，配合 message 里的
+//     迁移指引，客户端日志一眼能看懂该换转换层，而不是怀疑 key/网络。
+//
+// 该处理器在鉴权之后执行（路由同样包了 requireAPIKey），因此 410 不会
+// 泄露给未持 key 的扫描器。
+func (h *Handler) retiredProtocol(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		msg := name + " 已下线：本网关只提供 OpenAI Chat（POST /v1/chat/completions）。" +
+			"Claude Code / Codex CLI 请先经转换层（CC Switch / claude-code-router / LiteLLM）" +
+			"转成 OpenAI Chat 后再指向本网关。"
+		writeOpenAIError(w, http.StatusGone, "endpoint_retired", msg)
+	}
 }
 
 // ---------------------------------------------------------------------------

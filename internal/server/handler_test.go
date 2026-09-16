@@ -272,3 +272,23 @@ func TestValidationErrors(t *testing.T) {
 		}
 	}
 }
+
+// TestRetiredProtocolsGone 锁定「只提供 OpenAI Chat」这一对外契约：
+// /v1/messages、/v1/messages/count_tokens、/v1/responses 必须返回 410 Gone
+// 且提示迁移到转换层；未带 key 时仍是 401（不向扫描器泄露端点状态）。
+func TestRetiredProtocolsGone(t *testing.T) {
+	h, _ := newTestHandler(t, "ok", "sk-1")
+	for _, path := range []string{"/v1/messages", "/v1/messages/count_tokens", "/v1/responses"} {
+		w := do(t, h, "POST", path, "sk-1", `{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`)
+		if w.Code != http.StatusGone {
+			t.Fatalf("%s: got %d, want 410", path, w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "endpoint_retired") {
+			t.Fatalf("%s: body missing endpoint_retired marker: %s", path, w.Body.String())
+		}
+		// 未带 key：鉴权先行，仍是 401
+		if w := do(t, h, "POST", path, "", `{}`); w.Code != http.StatusUnauthorized {
+			t.Fatalf("%s without key: got %d, want 401", path, w.Code)
+		}
+	}
+}
