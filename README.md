@@ -202,15 +202,41 @@ internal/cred/         凭证加载 / 保存 / 续期
 internal/pool/         账号池 + 冷却状态机 + data/state.json
 internal/scheduler/    保活探活 + 到期自动禁用 + 每日自动签到（随机错开）
 internal/server/       OpenAI Chat 路由 + 管理 API + 后台页面（admin.html, go:embed）
-internal/upstream/     上游客户端 + 错误分类 + 模型 + 脱敏 + 协议处理
+internal/upstream/     上游客户端 + 错误分类 + 模型 + 脱敏 + 协议转换（已下线，见下）
 internal/usage/        本地用量累计 + quota 看门狗
 auths/                 凭证目录（.gitignore，不入库）
 data/                  运行时状态（state/usage/checkin_state，.gitignore）
 addkey.sh / addkey.ps1 添加 ck_ 凭证脚本
+deploy.sh              服务器更新脚本（git pull + 重建 + 自检 + 回滚）
+docker-compose.server.yml  服务器生产编排（icebears-net，不发布宿主端口）
 docs/admin-ui.png      管理后台界面截图
 Dockerfile / docker-compose.yml / config.example.json
 LICENSE
 ```
+
+---
+
+## 部署与更新（随时可更新）
+
+`deploy.sh` 面向「已部署的服务器也要能随时更新」这一场景，幂等、可反复执行：
+
+```bash
+cd /opt/codebuddy2api
+./deploy.sh              # git pull + docker compose 重建 + 健康检查 + 应用自检
+./deploy.sh --no-pull    # 只用当前代码重建（离线/调试）
+./deploy.sh --rollback   # 一键回滚到上一个镜像
+```
+
+要点：
+
+- **数据与代码分离**：`auths/`（凭证）、`data/`（冷却/用量/签到状态）、`config.json`
+  都是挂载进容器的宿主机文件，重建容器**不丢账号、不丢状态、key 不变**。
+- **自动备份镜像**：每次重建前把当前 `codebuddy2api:latest` 打上
+  `codebuddy2api:rollback-<时间戳>` tag，回滚即 `docker tag` + `up -d --no-build`。
+- **服务器只读部署**：服务器上不要直接改源码（会被 `git pull` 覆盖）；
+  改动走「本地 commit + push → 服务器 `./deploy.sh`」。
+- **不在服务器跑 git 工作区改动的场景**：部署脚本只 `git pull`，
+  拉取失败会因 `set -e` 中止，不会带着半套代码重建。
 
 ---
 

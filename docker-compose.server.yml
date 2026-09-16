@@ -1,0 +1,29 @@
+# docker-compose.server.yml — 服务器（icebears.cn）生产编排。
+#
+# 与 docker-compose.yml（本地开发用，映射 7865 宿主端口）的区别：
+#   - 加入外部网络 icebears-net，由 icebears-web（nginx）按容器名反代
+#   - 不发布宿主端口（对外只走 nginx /buddy/*）
+#   - 限制内存、固定时区
+#
+# 更新流程见 deploy.sh（git pull + 重建容器）。auths/ data/ config.json
+# 均是挂载进容器的宿主机文件，不受重建影响。
+services:
+  codebuddy2api:
+    build: .
+    image: codebuddy2api:latest
+    container_name: codebuddy2api
+    restart: unless-stopped
+    networks:
+      - icebears-net
+    mem_limit: 256m
+    environment:
+      TZ: Asia/Shanghai
+      CB2A_TRACE_BODY: "0"
+    volumes:
+      - ./auths:/app/auths
+      - ./data:/app/data
+      - ./config.json:/app/config.json:ro
+
+networks:
+  icebears-net:
+    external: true
