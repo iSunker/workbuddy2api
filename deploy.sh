@@ -54,11 +54,27 @@ if [ "$DO_PULL" = "1" ]; then
   git pull --ff-only
 fi
 
-echo "==> 备份当前镜像为 $TAG"
-if docker image inspect codebuddy2api:latest >/dev/null 2>&1; then
+# 迁移/接管：历史上容器可能是 docker run 手工创建的（无 compose 标签），
+# 同名容器会挡住 compose up。数据全在挂载目录（auths/ data/ config.json），
+# 移除旧容器不丢任何东西。先记下运行镜像名，供随后备份。
+RUN_IMG=$(docker inspect --format '{{.Config.Image}}' codebuddy2api 2>/dev/null || true)
+if docker inspect codebuddy2api >/dev/null 2>&1; then
+  PROJ=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' codebuddy2api 2>/dev/null || true)
+  if [ -z "$PROJ" ]; then
+    echo "==> 旧容器非 compose 管理，先移除以便接管（挂载数据不受影响）"
+    docker rm -f codebuddy2api >/dev/null
+  fi
+fi
+
+echo "==> 备份当前运行镜像为 $TAG"
+if [ -n "$RUN_IMG" ] && docker image inspect "$RUN_IMG" >/dev/null 2>&1; then
+  docker tag "$RUN_IMG" "codebuddy2api:$TAG"
+  echo "    $RUN_IMG → codebuddy2api:$TAG"
+elif docker image inspect codebuddy2api:latest >/dev/null 2>&1; then
   docker tag codebuddy2api:latest "codebuddy2api:$TAG"
+  echo "    codebuddy2api:latest → codebuddy2api:$TAG"
 else
-  echo "（无 codebuddy2api:latest，跳过备份；这通常是首次部署）"
+  echo "    （无镜像可备份；通常为首次部署）"
 fi
 
 echo "==> 构建并重启"
