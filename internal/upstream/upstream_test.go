@@ -315,6 +315,36 @@ func TestBuildChatPayloadKeepsExistingSystem(t *testing.T) {
 	}
 }
 
+// TestProbePayloadHasSystemFirst 锁定保活/重测探针的首消息必须是 system：
+// 上游硬性要求（否则 11128 "first message is not system prompt"），而探针
+// 绕过了 BuildChatPayload 的自动补齐。缺 system 会让「模型列表拉不到」的
+// 账号（如 saas 域）在保活里被误判为连接失败。
+func TestProbePayloadHasSystemFirst(t *testing.T) {
+	p := probePayload()
+	if p["stream"] != true {
+		t.Fatalf("probe must be streaming, got %v", p["stream"])
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	msgs, _ := out["messages"].([]any)
+	if len(msgs) < 2 {
+		t.Fatalf("want >=2 messages (system+user), got %d", len(msgs))
+	}
+	first, _ := msgs[0].(map[string]any)
+	if first["role"] != "system" {
+		t.Fatalf("first message role = %v, want system", first["role"])
+	}
+	if c, _ := first["content"].(string); c == "" {
+		t.Fatal("system content must not be empty")
+	}
+}
+
 func TestBuildChatPayloadCleansTools(t *testing.T) {
 	req := map[string]any{
 		"model":    "glm-5.2",

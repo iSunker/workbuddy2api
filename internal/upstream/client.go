@@ -364,12 +364,7 @@ func writeFileSafe(path string, data []byte) error {
 // Probe 用最小请求探测凭证是否有效（用于保活与健康检查）。
 // 只建立连接并读少量字节，不消费完整生成过程。
 func (c *Client) Probe(ctx context.Context, token string) error {
-	payload, err := json.Marshal(map[string]any{
-		"model":      "auto",
-		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
-		"stream":     true,
-		"max_tokens": 1,
-	})
+	payload, err := json.Marshal(probePayload())
 	if err != nil {
 		return err
 	}
@@ -386,14 +381,27 @@ func (c *Client) Probe(ctx context.Context, token string) error {
 	return nil
 }
 
-// ProbeRealm 按 base / chat 路径 / 额外头探测凭证有效性（用于保活与健康检查）。
-func (c *Client) ProbeRealm(ctx context.Context, base, chatPath, token string, hdr map[string]string) error {
-	payload, err := json.Marshal(map[string]any{
-		"model":      "auto",
-		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
+// probePayload 保活/重测探针的最小请求体。
+//
+// 必须自带 system 首消息：上游硬性要求首条为 system 角色，否则回
+// 11128 "first message is not system prompt"（聊天主路径由 BuildChatPayload
+// 自动补齐，探针绕过了它，此处必须显式给）。缺了会让「模型列表拉不到」的
+// 账号（如 saas 域）在保活/重测里一律显示连接失败，且失败原因具有误导性。
+func probePayload() map[string]any {
+	return map[string]any{
+		"model": "auto",
+		"messages": []map[string]string{
+			{"role": "system", "content": "You are a helpful assistant."},
+			{"role": "user", "content": "hi"},
+		},
 		"stream":     true,
 		"max_tokens": 1,
-	})
+	}
+}
+
+// ProbeRealm 按 base / chat 路径 / 额外头探测凭证有效性（用于保活与健康检查）。
+func (c *Client) ProbeRealm(ctx context.Context, base, chatPath, token string, hdr map[string]string) error {
+	payload, err := json.Marshal(probePayload())
 	if err != nil {
 		return err
 	}
