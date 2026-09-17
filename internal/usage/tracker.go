@@ -34,12 +34,13 @@ type Tracker struct {
 }
 
 type persisted struct {
-	Total    float64            `json:"total"`
-	Limit    float64            `json:"limit"`
-	Accounts map[string]float64 `json:"accounts"`
-	Daily    map[string]float64 `json:"daily,omitempty"`
-	Updated  time.Time          `json:"updated"`
-	Records  []Record           `json:"records,omitempty"`
+	Total     float64                       `json:"total"`
+	Limit     float64                       `json:"limit"`
+	Accounts  map[string]float64            `json:"accounts"`
+	Daily     map[string]float64            `json:"daily,omitempty"`
+	DailyAcct map[string]map[string]float64 `json:"daily_accounts,omitempty"`
+	Updated   time.Time                     `json:"updated"`
+	Records   []Record                      `json:"records,omitempty"`
 }
 
 // Record 一次真实请求的消费明细（供看板「积分消费情况」表展示）。
@@ -57,14 +58,15 @@ type Record struct {
 
 // Snapshot 只读快照。
 type Snapshot struct {
-	Total     float64            `json:"total"`
-	Limit     float64            `json:"limit"`
-	Remaining float64            `json:"remaining"`
-	Accounts  map[string]float64 `json:"accounts"`
-	Today     float64            `json:"today"`
-	TodayDate string             `json:"today_date"`
-	Updated   time.Time          `json:"updated"`
-	Records   []Record           `json:"records,omitempty"`
+	Total          float64            `json:"total"`
+	Limit          float64            `json:"limit"`
+	Remaining      float64            `json:"remaining"`
+	Accounts       map[string]float64 `json:"accounts"`
+	Today          float64            `json:"today"`
+	TodayDate      string             `json:"today_date"`
+	TodayByAccount map[string]float64 `json:"today_by_account,omitempty"`
+	Updated        time.Time          `json:"updated"`
+	Records        []Record           `json:"records,omitempty"`
 }
 
 // New 创建/加载 Tracker。limit 为 0 时使用默认 500。
@@ -92,6 +94,9 @@ func New(path string, limit float64) *Tracker {
 	if t.data.Daily == nil {
 		t.data.Daily = map[string]float64{}
 	}
+	if t.data.DailyAcct == nil {
+		t.data.DailyAcct = map[string]map[string]float64{}
+	}
 	// 首次升级到带按天账本的版本时，用明细里的 credit 回填按天数据。
 	// 明细只有 200 条（环形），回填值对较早的日期可能偏小，属尽力而为；
 	// 之后每日累计由 Add 精确维护。
@@ -100,7 +105,30 @@ func New(path string, limit float64) *Tracker {
 			if r.At.IsZero() || r.Credit <= 0 {
 				continue
 			}
-			t.data.Daily[r.At.Format(dateFmt)] += r.Credit
+			d := r.At.Format(dateFmt)
+			t.data.Daily[d] += r.Credit
+			if r.UID != "" {
+				if t.data.DailyAcct[d] == nil {
+					t.data.DailyAcct[d] = map[string]float64{}
+				}
+				t.data.DailyAcct[d][r.UID] += r.Credit
+			}
+		}
+	}
+	// 老版本已有 Daily 但没有 DailyAcct 时，用明细回填当日分账号（尽力而为）
+	if len(t.data.Daily) > 0 && len(t.data.DailyAcct) == 0 && len(t.data.Records) > 0 {
+		for _, r := range t.data.Records {
+			if r.At.IsZero() || r.Credit <= 0 || r.UID == "" {
+				continue
+			}
+			d := r.At.Format(dateFmt)
+			if _, ok := t.data.Daily[d]; !ok {
+				continue
+			}
+			if t.data.DailyAcct[d] == nil {
+				t.data.DailyAcct[d] = map[string]float64{}
+			}
+			t.data.DailyAcct[d][r.UID] += r.Credit
 		}
 	}
 	return t
@@ -118,10 +146,20 @@ func (t *Tracker) Add(uid string, credit float64) {
 		t.data.Accounts[uid] += credit
 	}
 	now := time.Now()
+	day := now.Format(dateFmt)
 	if t.data.Daily == nil {
 		t.data.Daily = map[string]float64{}
 	}
-	t.data.Daily[now.Format(dateFmt)] += credit
+	t.data.Daily[day] += credit
+	if uid != "" {
+		if t.data.DailyAcct == nil {
+			t.data.DailyAcct = map[string]map[string]float64{}
+		}
+		if t.data.DailyAcct[day] == nil {
+			t.data.DailyAcct[day] = map[string]float64{}
+		}
+		t.data.DailyAcct[day][uid] += credit
+	}
 	t.data.Updated = now
 	t.pruneDailyLocked(now)
 	t.save()
@@ -137,6 +175,7 @@ func (t *Tracker) pruneDailyLocked(now time.Time) {
 	for k := range t.data.Daily {
 		if d, err := time.ParseInLocation(dateFmt, k, time.Local); err == nil && d.Before(cutoff) {
 			delete(t.data.Daily, k)
+			delete(t.data.DailyAcct, k)
 		}
 	}
 }
@@ -186,15 +225,20 @@ func (t *Tracker) Snapshot() Snapshot {
 		recs = append(recs, t.data.Records[i])
 	}
 	today := time.Now().Format(dateFmt)
+	todayAcc := make(map[string]float64, len(t.data.DailyAcct[today]))
+	for k, v := range t.data.DailyAcct[today] {
+		todayAcc[k] = v
+	}
 	return Snapshot{
-		Total:     t.data.Total,
-		Limit:     t.data.Limit,
-		Remaining: t.data.Limit - t.data.Total,
-		Accounts:  accs,
-		Today:     t.data.Daily[today],
-		TodayDate: today,
-		Updated:   t.data.Updated,
-		Records:   recs,
+		Total:          t.data.Total,
+		Limit:          t.data.Limit,
+		Remaining:      t.data.Limit - t.data.Total,
+		Accounts:       accs,
+		Today:          t.data.Daily[today],
+		TodayDate:      today,
+		TodayByAccount: todayAcc,
+		Updated:        t.data.Updated,
+		Records:        recs,
 	}
 }
 

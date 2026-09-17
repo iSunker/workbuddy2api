@@ -128,3 +128,30 @@ func TestDailyBackfillFromRecords(t *testing.T) {
 		t.Fatalf("backfilled today = %v, want 0.75", got)
 	}
 }
+
+// TestTodayByAccount 锁定「点击今日已用 → 展开各账号当日消耗」契约：
+// 按账号拆分、与 today 总额一致、持久化后不丢。
+func TestTodayByAccount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	tr := New(path, 500)
+	tr.Add("u1", 0.5)
+	tr.Add("u2", 1.5)
+	tr.Add("u1", 0.25)
+	snap := tr.Snapshot()
+	by := snap.TodayByAccount
+	if len(by) != 2 || by["u1"] != 0.75 || by["u2"] != 1.5 {
+		t.Fatalf("today_by_account = %v, want u1=0.75 u2=1.5", by)
+	}
+	var sum float64
+	for _, v := range by {
+		sum += v
+	}
+	if sum != snap.Today {
+		t.Fatalf("sum(by_account) = %v != today = %v", sum, snap.Today)
+	}
+	// 持久化：重新加载后仍在
+	again := New(path, 500)
+	if got := again.Snapshot().TodayByAccount["u1"]; got != 0.75 {
+		t.Fatalf("reloaded today_by_account[u1] = %v, want 0.75", got)
+	}
+}
