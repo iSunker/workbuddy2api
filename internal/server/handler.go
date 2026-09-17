@@ -1402,11 +1402,13 @@ func (h *Handler) apiUsageRecords(w http.ResponseWriter, r *http.Request) {
 	}
 	snap := h.cfg.Tracker.Snapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"records": recs,
-		"count":   len(recs),
-		"total":   snap.Total,   // 累计消耗（与额度卡一致的口径）
-		"limit":   snap.Limit,   // 看门狗上限
-		"updated": snap.Updated, // 最后一次累计时间
+		"records":    recs,
+		"count":      len(recs),
+		"total":      snap.Total,     // 累计消耗（与额度卡一致的口径）
+		"limit":      snap.Limit,     // 看门狗上限
+		"today":      snap.Today,     // 今日已消耗（按天账本，不受环形缓冲条数限制）
+		"today_date": snap.TodayDate, // 今日日期（本地时区 YYYY-MM-DD）
+		"updated":    snap.Updated,   // 最后一次累计时间
 	})
 }
 

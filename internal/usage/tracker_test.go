@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestRecordRingBufferAndOrder 锁定消费明细的两个契约：
@@ -77,5 +78,53 @@ func TestExtractCreditUnchanged(t *testing.T) {
 	}
 	if got := ExtractCredit(nil); got != 0 {
 		t.Fatalf("credit(nil) = %v, want 0", got)
+	}
+}
+
+// TestDailyToday 锁定「今日使用额度」契约：Add 累计时同步按天账；
+// Today 取本地日期当天，且不受环形缓冲条数限制（比明细求和更全）。
+func TestDailyToday(t *testing.T) {
+	tr := New(filepath.Join(t.TempDir(), "usage.json"), 500)
+	tr.Add("u1", 0.5)
+	tr.Add("u2", 1.5)
+	snap := tr.Snapshot()
+	if snap.Today != 2.0 {
+		t.Fatalf("today = %v, want 2.0", snap.Today)
+	}
+	if snap.TodayDate != time.Now().Format("2006-01-02") {
+		t.Fatalf("today_date = %q", snap.TodayDate)
+	}
+	// 只加明细（Record）不加金额（Add）不应计入今日
+	tr.Record(Record{Model: "m", Credit: 99})
+	if got := tr.Snapshot().Today; got != 2.0 {
+		t.Fatalf("today after Record-only = %v, want 2.0（金额口径仍以 Add 为准）", got)
+	}
+}
+
+// TestDailyPersists 按天账本持久化：容器重建后今日值不丢。
+func TestDailyPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	tr := New(path, 500)
+	tr.Add("u1", 3.25)
+	again := New(path, 500)
+	if got := again.Snapshot().Today; got != 3.25 {
+		t.Fatalf("today after reload = %v, want 3.25", got)
+	}
+}
+
+// TestDailyBackfillFromRecords 升级回填：老文件只有明细没有 daily 时，
+// 用明细里的 credit 回填当天（尽力而为，之后由 Add 精确维护）。
+func TestDailyBackfillFromRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	tr := New(path, 500)
+	tr.Record(Record{Model: "m", Credit: 0.75}) // 时间取 now
+	// 模拟旧版本写入的文件：清掉 daily 再重新加载
+	tr.mu.Lock()
+	tr.data.Daily = nil
+	tr.save()
+	tr.mu.Unlock()
+	again := New(path, 500)
+	if got := again.Snapshot().Today; got != 0.75 {
+		t.Fatalf("backfilled today = %v, want 0.75", got)
 	}
 }

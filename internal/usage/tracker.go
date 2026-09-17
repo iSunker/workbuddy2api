@@ -17,17 +17,27 @@ const defaultLimit = 500.0
 // 再多就丢最旧的（明细是「看最近烧了什么」，不是账本）。
 const maxRecords = 200
 
+// 按天账本：Daily 以本地日期（YYYY-MM-DD）为键累计当日消耗。
+// 看板「今日使用额度」依赖它——环形缓冲只有 200 条，繁忙时覆盖不了
+// 完整一天，只在明细里求和会少算。
+const (
+	dateFmt      = "2006-01-02"
+	dailyKeep    = 62 // 保留最近约两个月的按天数据
+	dailyPruneAt = dailyKeep + 15
+)
+
 // Tracker 线程安全的额度累计器。
 type Tracker struct {
-	mu    sync.RWMutex
-	path  string
-	data  persisted
+	mu   sync.RWMutex
+	path string
+	data persisted
 }
 
 type persisted struct {
 	Total    float64            `json:"total"`
 	Limit    float64            `json:"limit"`
 	Accounts map[string]float64 `json:"accounts"`
+	Daily    map[string]float64 `json:"daily,omitempty"`
 	Updated  time.Time          `json:"updated"`
 	Records  []Record           `json:"records,omitempty"`
 }
@@ -51,6 +61,8 @@ type Snapshot struct {
 	Limit     float64            `json:"limit"`
 	Remaining float64            `json:"remaining"`
 	Accounts  map[string]float64 `json:"accounts"`
+	Today     float64            `json:"today"`
+	TodayDate string             `json:"today_date"`
 	Updated   time.Time          `json:"updated"`
 	Records   []Record           `json:"records,omitempty"`
 }
@@ -77,6 +89,20 @@ func New(path string, limit float64) *Tracker {
 	if t.data.Accounts == nil {
 		t.data.Accounts = map[string]float64{}
 	}
+	if t.data.Daily == nil {
+		t.data.Daily = map[string]float64{}
+	}
+	// 首次升级到带按天账本的版本时，用明细里的 credit 回填按天数据。
+	// 明细只有 200 条（环形），回填值对较早的日期可能偏小，属尽力而为；
+	// 之后每日累计由 Add 精确维护。
+	if len(t.data.Daily) == 0 && len(t.data.Records) > 0 {
+		for _, r := range t.data.Records {
+			if r.At.IsZero() || r.Credit <= 0 {
+				continue
+			}
+			t.data.Daily[r.At.Format(dateFmt)] += r.Credit
+		}
+	}
 	return t
 }
 
@@ -91,8 +117,28 @@ func (t *Tracker) Add(uid string, credit float64) {
 	if uid != "" {
 		t.data.Accounts[uid] += credit
 	}
-	t.data.Updated = time.Now()
+	now := time.Now()
+	if t.data.Daily == nil {
+		t.data.Daily = map[string]float64{}
+	}
+	t.data.Daily[now.Format(dateFmt)] += credit
+	t.data.Updated = now
+	t.pruneDailyLocked(now)
 	t.save()
+}
+
+// pruneDailyLocked 只保留最近 dailyKeep 天（调用方需持写锁）。
+// 不在每次 Add 都排序：仅在键数超过 dailyPruneAt 时清理，摊薄开销。
+func (t *Tracker) pruneDailyLocked(now time.Time) {
+	if len(t.data.Daily) <= dailyPruneAt {
+		return
+	}
+	cutoff := now.AddDate(0, 0, -dailyKeep)
+	for k := range t.data.Daily {
+		if d, err := time.ParseInLocation(dateFmt, k, time.Local); err == nil && d.Before(cutoff) {
+			delete(t.data.Daily, k)
+		}
+	}
 }
 
 // Record 追加一条消费明细（不累计金额——金额仍由 Add 负责，
@@ -123,7 +169,8 @@ func (t *Tracker) Records() []Record {
 	return out
 }
 
-// Snapshot 返回当前快照。
+// Snapshot 返回当前快照。Today 为本地日期当天已累计的消耗
+// （按天账本与明细互补：账本是权威值，与明细求和应一致或更大）。
 func (t *Tracker) Snapshot() Snapshot {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -138,11 +185,14 @@ func (t *Tracker) Snapshot() Snapshot {
 	for i := n - 1; i >= 0; i-- {
 		recs = append(recs, t.data.Records[i])
 	}
+	today := time.Now().Format(dateFmt)
 	return Snapshot{
 		Total:     t.data.Total,
 		Limit:     t.data.Limit,
 		Remaining: t.data.Limit - t.data.Total,
 		Accounts:  accs,
+		Today:     t.data.Daily[today],
+		TodayDate: today,
 		Updated:   t.data.Updated,
 		Records:   recs,
 	}
