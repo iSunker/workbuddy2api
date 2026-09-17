@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -191,6 +192,7 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("GET /api/quota", requireAPIKey(cfg.APIKey, h.apiQuota))
 	h.mux.HandleFunc("GET /api/quota/all", requireAPIKey(cfg.APIKey, h.apiQuotaAll))
 	h.mux.HandleFunc("GET /api/quota/usage", requireAPIKey(cfg.APIKey, h.apiQuotaUsage))
+	h.mux.HandleFunc("GET /api/usage/records", requireAPIKey(cfg.APIKey, h.apiUsageRecords))
 	h.mux.HandleFunc("POST /api/quota/limit", requireAPIKey(cfg.APIKey, h.apiQuotaLimit))
 	h.mux.HandleFunc("POST /api/checkin", requireAPIKey(cfg.APIKey, h.apiCheckin))
 	h.mux.HandleFunc("GET /api/checkin/status", requireAPIKey(cfg.APIKey, h.apiCheckinStatus))
@@ -452,10 +454,20 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rc.Close()
 
+	// 消费明细计时起点：从拿到上游流开始（真正的生成耗时；
+	// 前面的账号挑选与建连耗时不计入，避免把排队时间算成模型延迟）。
+	started := time.Now()
+
 	if probe.Stream {
 		h.writeSSEHeader(w)
 		flush := h.flusher(w)
-		if err := upstream.StreamAsOpenAI(w, rc, model, flush, h.usageCallback(acct.UID)); err != nil {
+		// 流式：上游在最后一个 chunk 给 usage，回调恰好触发一次（实测），
+		// 在这里落明细与额度累计。
+		onUsage := func(u map[string]any) {
+			h.recordConsumption(acct.UID, model, u, started, true)
+			h.recordUsage(acct.UID, map[string]any{"usage": u})
+		}
+		if err := upstream.StreamAsOpenAI(w, rc, model, flush, onUsage); err != nil {
 			log.Printf("chat: stream aborted uid=%s model=%s: %v", acct.UID, model, err)
 		}
 		return
@@ -472,6 +484,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.recordUsage(acctAgg.UID, resp)
+	if u, _ := resp["usage"].(map[string]any); u != nil {
+		h.recordConsumption(acctAgg.UID, model, u, started, false)
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1050,6 +1065,31 @@ func (h *Handler) recordUsage(uid string, resp map[string]any) {
 	}
 }
 
+// recordConsumption 记一次真实请求的消费明细（看板「积分消费情况」表用）。
+// 与 recordUsage 的区别：这里允许 credit 为 0（也记 token / 延迟），
+// 只用于展示；金额累计仍以 Add 为准，避免两边口径打架。
+func (h *Handler) recordConsumption(uid, model string, u map[string]any, start time.Time, stream bool) {
+	if h.cfg.Tracker == nil {
+		return
+	}
+	p, c, t := usage.TokenUsage(u)
+	// 全零的探针类请求（max_tokens<=2 短路或空 usage）不值得进明细
+	if p == 0 && c == 0 && t == 0 && usage.ExtractCredit(u) == 0 {
+		return
+	}
+	h.cfg.Tracker.Record(usage.Record{
+		At:               time.Now(),
+		UID:              uid,
+		Model:            model,
+		PromptTokens:     p,
+		CompletionTokens: c,
+		TotalTokens:      t,
+		Credit:           usage.ExtractCredit(u),
+		LatencyMS:        time.Since(start).Milliseconds(),
+		Stream:           stream,
+	})
+}
+
 func (h *Handler) usageCallback(uid string) func(map[string]any) {
 	return func(u map[string]any) {
 		if h.cfg.Tracker == nil {
@@ -1345,6 +1385,29 @@ func (h *Handler) apiQuotaUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, h.cfg.Tracker.Snapshot())
+}
+
+// apiUsageRecords 返回最近的消费明细（最新在前），供看板「积分消费情况」表使用。
+// 支持 ?limit=N 截断（默认全部，最多 maxRecords=200 条，Tracker 侧已限长）。
+func (h *Handler) apiUsageRecords(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.Tracker == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "tracker not initialized"})
+		return
+	}
+	recs := h.cfg.Tracker.Records()
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n < len(recs) {
+			recs = recs[:n]
+		}
+	}
+	snap := h.cfg.Tracker.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"records": recs,
+		"count":   len(recs),
+		"total":   snap.Total,   // 累计消耗（与额度卡一致的口径）
+		"limit":   snap.Limit,   // 看门狗上限
+		"updated": snap.Updated, // 最后一次累计时间
+	})
 }
 
 // apiQuotaLimit 设置额度上限。
