@@ -13,12 +13,29 @@
 
 | 项目 | 要求 |
 | --- | --- |
-| CPU 架构 | x86_64（Intel/AMD 型号）可直接 build；ARM 型号（DS223 等）也能 build，只是慢 |
-| 网络 | 能访问 GitHub（拉源码）+ Docker Hub（拉 `golang:1.23-alpine` / `alpine:3.20` 基础镜像） |
-| 群晖 | DSM 7.x，启用「容器管理器（Container Manager）」；建议同时开启 SSH |
+| CPU 架构 | x86_64（Intel/AMD 型号）可直接 build；ARM 型号也能 build，实测 DS423 编译约 25s |
+| 网络 | **NAS 需能访问 Docker Hub**，拉 `golang:1.23-alpine` / `alpine:3.20` 基础镜像 |
+| 群晖 | DSM 7.x，启用「容器管理器（Container Manager）」；**需手动开启 SSH** |
 | 端口 | 7865 未被占用 |
 
-先在 NAS 上确认架构与端口：
+### 群晖上与常规 Linux 的三个关键差异
+
+这三点是实测踩出来的，**别按常规 Linux 的经验来**：
+
+1. **默认不带 `git`** —— 直接 `git clone` 会报 `git: command not found`。
+   本文档的部署流程**不依赖 NAS 上的 git**；若确实要用，去套件中心装 `Git Server`。
+2. **Docker 需要 `sudo`** —— 普通用户不在 docker 组，直接跑会报
+   `permission denied ... /var/run/docker.sock`。两种解法：
+   ```bash
+   sudo docker compose -f docker-compose.nas.yml up -d --build   # 每次加 sudo
+   # 或把自己加入 docker 组（改完需重新登录 SSH 才生效）：
+   sudo synogroup --add docker "$USER"
+   ```
+3. **SSH 默认关闭且不自动启动** —— 去 **控制面板 → 终端机和 SNMP → 终端机**
+   勾选「启动 SSH 功能」。若连不上，检查 **控制面板 → 安全性 → 防火墙**，
+   以及「自动封锁」名单里有没有你的 IP。
+
+### 先确认架构与端口
 
 ```bash
 uname -m                          # x86_64 或 aarch64
@@ -37,14 +54,51 @@ sudo netstat -tulnp | grep 7865   # 无输出说明端口空闲
 
 ### 1. 放置源码
 
+先确定项目要放哪个存储卷。群晖最多有多块盘/存储池，Docker 项目建议放在 SSD 卷上
+（例如 `/volume2/docker_ssd/`），**下文一律用 `$PROJ` 代指该目录**，按实际情况替换：
+
 ```bash
-sudo mkdir -p /volume1/docker/workbuddy2api
-sudo chown -R "$(id -u)":"$(id -g)" /volume1/docker/workbuddy2api
-cd /volume1/docker/workbuddy2api
-git clone https://github.com/icebears111/workbuddy2api.git .
+PROJ=/volume2/docker_ssd/workbuddy2api   # ← 改成你自己的路径
+sudo mkdir -p "$PROJ"
+sudo chown -R "$(id -u)":"$(id -g)" "$PROJ"
+cd "$PROJ"
 ```
 
-也可以先用 File Station 把整个目录上传，再在 NAS 上 `git remote set-url` 配好，效果一样。
+**方式一：`git clone`（需先在套件中心装 `Git Server`）**
+
+```bash
+git clone <你的仓库地址> .
+```
+
+**方式二：本机打包传过去（推荐，不依赖 NAS 上的 git）**
+
+在本机（Windows Git Bash）执行：
+
+```bash
+# 只打包源码，排除凭证与本地状态
+tar czf /tmp/wb2api-src.tar.gz \
+  --exclude='./.git' --exclude='./auths' --exclude='./data' --exclude='./config.json' .
+
+# ⚠️ 关键：Windows 是 CRLF 行尾，必须转换，否则 NAS 上会连环报错（见「踩坑清单」第 7 条）
+tar xzf /tmp/wb2api-src.tar.gz -C /tmp/wb2api-lf
+find /tmp/wb2api-lf -type f \
+  \( -name '*.sh' -o -name '*.json' -o -name '*.yml' -o -name '*.md' -o -name '*.go' \) \
+  -exec sed -i 's/\r$//' {} +
+tar czf /tmp/wb2api-src.tar.gz -C /tmp/wb2api-lf .
+
+scp /tmp/wb2api-src.tar.gz <用户名>@<NAS-IP>:/volume2/docker_ssd/workbuddy2api/   # 换成你的路径
+```
+
+> 传文件也可走 SMB：资源管理器输入 `\\<NAS-IP>`，进共享文件夹直接拖。
+> 注意 `\\<NAS-IP>\<共享名>` 映射到的**真实卷路径**未必和 SSH 里看到的一致，
+> 拖完用 `ls -la "$PROJ"` 确认真到了预期位置。
+
+再到 NAS 上解包：
+
+```bash
+cd "$PROJ"
+tar xzf wb2api-src.tar.gz && rm wb2api-src.tar.gz
+```
 
 ### 2. 建配置与数据目录
 
@@ -57,81 +111,145 @@ mkdir -p auths data
 
 ### 3. 改 `config.json`
 
-至少改掉网关密钥（`api_key`），这个值就是你以后给各客户端用的 `Authorization: Bearer <key>`：
+至少改掉网关密钥（`api_key`），这个值就是你以后给各客户端用的 `Authorization: Bearer <key>`。
 
-```bash
-vi config.json
-```
-
-```jsonc
-{
-  "listen": ":7865",
-  "api_key": "换成你自己的随机字符串",   // ← 改这里
-  "auth_dir": "./auths",
-  "state_file": "./data/state.json"
-  // ... 其余保持默认即可
-}
-```
-
-生成一个随机密钥（NAS 上跑，或本机 `openssl rand -hex 16` 生成后粘贴）：
+生成一个随机密钥：
 
 ```bash
 python3 -c "import secrets;print(secrets.token_hex(16))"
 ```
 
-### 4. 修目录权限
-
-镜像内以 **uid 10001（app 用户）**运行，而群晖挂载目录属主通常是 `admin`，
-不处理会导致写 `data/state.json` 报权限错误：
+替换进配置（**推荐这种非交互方式，避免编辑器引入问题**）：
 
 ```bash
-sudo chown -R 10001:10001 data
+sed -i 's/"your-api-key-here"/"<上面生成的随机串>"/' config.json
+sed -i 's/\r$//' config.json                     # 清掉可能存在的 CR
+python3 -m json.tool config.json > /dev/null && echo "✅ JSON 合法"
 ```
 
-`auths/` 容器内只需读取，一般不必改属主；若仍报错可一并 `chown`。
+其余字段保持默认即可：
+
+```jsonc
+{
+  "listen": ":7865",
+  "api_key": "<你的随机串>",       // ← 客户端就用这个
+  "auth_dir": "./auths",
+  "state_file": "./data/state.json"
+}
+```
+
+> 若用 `vi` 手改，改完同样跑一遍 `sed -i 's/\r$//' config.json` 和
+> `python3 -m json.tool` 校验。
+
+### 4. 修权限（最容易反复踩的一步）
+
+镜像内以 **uid 10001（app 用户）**运行，容器**只需读**源码与配置、**需要写** `data/`。
+只要"读的能读、写的能写"，权限就对了。一条命令覆盖全部：
+
+```bash
+cd "$PROJ"
+chmod 755 .                 # 父目录必须可进入，否则里面所有文件都读不到
+chmod -R a+r .              # 全部文件对所有人可读（容器只读，放宽无风险）
+sudo chown -R 10001:10001 data   # 只有 data 需要容器可写
+```
+
+完成后用 `ls -la` 检查，关键看这四项：
+
+| 对象 | 期望 | 说明 |
+| --- | --- | --- |
+| `$PROJ`（项目目录） | `drwxr-xr-x` | **必须 `a+x`**，否则容器连目录都进不去 |
+| `config.json` | 含 `r` for others | 如 `-rw-r--r--` |
+| `auths/` 及其内文件 | 含 `r` | 如 `drwxr-xr-x` / `-rw-r--r--` |
+| `data/` | 属主 `10001`，含 `w` | 如 `drwxrwxrwx` |
+
+> ⚠️ **三个反直觉之处**（实测踩过）：
+>
+> 1. **父目录权限是隐形杀手**。文件本身 777 也可能读不到——若项目目录是
+>    `drwx------`（700），容器什么都访问不了，日志报 `permission denied`。
+> 2. **`chown` 成 10001 后，你自己反而不方便了**。你（`iSunker`）不是属主，
+>    删改这些文件需 `sudo`，`chmod` 会报 `Operation not permitted` —— 这是正常的，
+>    不是出错。
+> 3. **权限会反复失效**。每次你在 NAS 上 `cp`/`vi`/解包/重新拖拽产生新文件，
+>    属主和权限都会重置。**改了文件就重跑一遍上面三条命令**。
+
+若 `chmod` 因群晖 ACL 不生效（`ls -la` 输出带 `+` 号），用群晖自己的工具查看/清除：
+
+```bash
+sudo synoacltool -get "$PROJ"
+sudo synoacltool -del "$PROJ"      # 谨慎：清掉 ACL 后按传统权限位生效
+```
+
+实在懒得处理权限，可在 `docker-compose.nas.yml` 里打开 `user: "0:0"` 让容器以 root 运行
+（能用，但放弃最小权限设计，不推荐）。
 
 ### 5. 添加凭证
 
+**推荐：启动后用管理后台「自动授权登录」** —— 不用找 key，浏览器登录即可：
+
+启动完成后打开 `http://<NAS-IP>:7865/admin` →「自动授权登录」→ 选中国版
+（`copilot.tencent.com`）或国际版（`www.codebuddy.ai`）。
+
+**或用 `ck_` Key**（key 从 CodeBuddy 客户端/后台获取，形如 `ck_xxxxxxxx`）：
+
 ```bash
-chmod +x addkey.sh
-./addkey.sh ck_你的key 备注名
+./addkey.sh ck_你的真实key 备注名
 ```
 
-生成 `auths/codebuddy-备注名.json`。不传备注名时会按 key 的校验和自动命名。
+生成 `auths/codebuddy-备注名.json`。不传备注名时按 key 校验和自动命名。
 
-也可以跳过脚本，启动后打开 `http://<NAS-IP>:7865/admin` →「自动授权登录」，
-浏览器登录 CodeBuddy 完成绑号（中国版 `copilot.tencent.com` / 国际版 `www.codebuddy.ai`）。
+> ⚠️ **不要把示例里的中文当参数照抄**。`./addkey.sh ck_你的key 备注名` 会把
+> 字面量 `ck_你的key` 写进凭证文件——那是个无效 key，服务会正常启动但拉模型时
+> 报 `http 401: {"message":"invalid_format"}`。真 key 必须是 `ck_` 开头的实际字符串。
+
+添加后在管理后台点「**重载目录**」，或重启容器生效。
 
 ### 6. 构建并启动
 
-命令行方式：
-
 ```bash
-docker compose -f docker-compose.nas.yml up -d --build
+sudo docker compose -f docker-compose.nas.yml up -d --build
 ```
 
-群晖图形界面方式：**容器管理器 → 项目 → 新增** → 路径填 `/volume1/docker/workbuddy2api`
+> 群晖上 Docker 需要 `sudo`（见「前置条件」第 2 点）。
+
+群晖图形界面方式：**容器管理器 → 项目 → 新增** → 路径填 `$PROJ`
 → 由于目录下同时存在 `docker-compose.yml`，需在界面上手动把编排文件指定为
 `docker-compose.nas.yml` → 下一步 → 完成。
 
-首次构建需下载 Go 工具链并编译，NAS 上通常 **3–10 分钟**，属正常。
+**实测耗时参考**（DS423，ARM）：拉镜像 + 编译共约 **157s**，其中 `go build` 约 25s。
+首次构建后镜像层有缓存，后续重建快得多。
 
 ---
 
 ## 三、验证
 
 ```bash
+cd "$PROJ"
+
 # 1) 容器状态：应为 Up (healthy)
-docker compose -f docker-compose.nas.yml ps
+sudo docker ps --filter name=workbuddy2api-cb2api-1
 
-# 2) 应用自检（容器内，不经宿主端口）
+# 2) 健康检查（容器内，不经宿主端口）
+sudo docker exec workbuddy2api-cb2api-1 wget -qO- http://127.0.0.1:7865/healthz
+
+# 3) 模型列表（验证凭证真的能用，这一步最关键）
 KEY=$(python3 -c "import json;print(json.load(open('config.json'))['api_key'])")
-docker exec $(docker compose -f docker-compose.nas.yml ps -q cb2api) \
-  wget -qO- --header="Authorization: Bearer $KEY" http://127.0.0.1:7865/v1/models
-
-# 3) 从局域网另一台机器访问
-curl http://<NAS-IP>:7865/healthz
+curl -s -H "Authorization: Bearer $KEY" http://<NAS-IP>:7865/v1/models
 ```
+
+**实测的正常输出**：
+
+```json
+// 第 2 步
+{"accounts":1,"has_api_key":true,"healthy":1,"status":"ok","upstream_base":"https://copilot.tencent.com"}
+
+// 第 3 步（节选，共 19 个模型）
+{"data":[{"id":"auto","display_name":"自动（Auto）",...},
+         {"id":"deepseek-v4-pro","cost_factor":0.51,...},
+         {"id":"glm-5.3","cost_factor":0.79,...}],"object":"list"}
+```
+
+第 3 步能返回模型列表 = **凭证有效、整条链路打通**。若返回 401 或
+`invalid_format`，见「踩坑清单」第 8 条（多半是凭证无效）。
 
 浏览器打开 `http://<NAS-IP>:7865/admin` 能看到管理页即部署成功。
 
@@ -143,29 +261,46 @@ curl http://<NAS-IP>:7865/healthz
 
 ## 四、踩坑清单
 
-### 1. 漏建 `config.json` → 服务起不来
+### 1. 漏建 `config.json` → 挂载点变成目录
 
-`config.json` 在 `.gitignore` 里，`git clone` 后**只有 `config.example.json`**。
-compose 里写的是 `./config.json:/app/config.json:ro`，文件不存在时 Docker 会
-**自动创建一个同名目录**挂进去，程序读到目录而非文件，直接启动失败。
+compose 里写的是 `./config.json:/app/config.json:ro`。若宿主上 `config.json` **不存在**，
+Docker 会**自动创建一个同名目录**挂进去，程序读到目录而非文件，启动失败。
 
-现象：`docker logs` 里报读取配置失败；宿主上 `config.json` 变成一个目录。
+现象：`docker logs` 报读取配置失败；宿主上 `config.json` 是个目录（`ls -ld` 能看到 `d` 开头）。
 
 处理：
 
 ```bash
-docker compose -f docker-compose.nas.yml down
-rm -rf config.json && cp config.example.json config.json && vi config.json
-docker compose -f docker-compose.nas.yml up -d
+sudo docker compose -f docker-compose.nas.yml down
+rm -rf config.json && cp config.example.json config.json
+sed -i 's/\r$//' config.json
+# 改好 api_key 后：
+sudo docker compose -f docker-compose.nas.yml up -d
 ```
 
-### 2. `data/` 权限 → 状态写不进去
+### 2. 权限问题 → 容器读不到配置 / 写不进状态
 
-`Operation not permitted` / `permission denied` 出现在写 `state.json` 时，
-就是 uid 10001 对宿主目录没有写权限。`sudo chown -R 10001:10001 data` 即可。
+**这是实测中最容易反复踩、也最不容易一眼看穿的坑。** 分两种表现：
 
-不便 `chown` 时，可在 `docker-compose.nas.yml` 里打开 `user: "0:0"` 以 root 运行
-（能用，但放弃了镜像的最小权限设计，不推荐）。
+```
+load config: read config: open /app/config.json: permission denied   # 读不到
+# 或写 state.json 时报 permission denied                          # 写不了
+```
+
+**常被忽略的是父目录**：即使 `config.json` 本身是 777，只要项目目录是
+`drwx------`（700），容器（uid 10001）连目录都进不去，一样读不到文件。
+
+一揽子修复（见「部署步骤 4」，改完文件后重跑）：
+
+```bash
+cd "$PROJ"
+chmod 755 .                      # 父目录可进入 —— 关键
+chmod -R a+r .                   # 全部可读
+sudo chown -R 10001:10001 data   # data 需容器可写
+```
+
+**注意 `chmod` 报 `Operation not permitted` 不是错误** —— 那些文件属主已是 10001，
+你不是属主，所以改不了；只要权限位本来就够用（如 755），无需处理，加 `sudo` 也行。
 
 ### 3. 容器名冲突 / 误用 server 编排
 
@@ -201,7 +336,7 @@ ports:
 配置以只读方式挂载（`:ro`），且程序启动时读一次。改完必须重启容器：
 
 ```bash
-docker compose -f docker-compose.nas.yml restart
+sudo docker compose -f docker-compose.nas.yml restart
 ```
 
 ### 6. 编排文件版本字段的兼容性
@@ -213,6 +348,56 @@ docker compose -f docker-compose.nas.yml restart
 
 `mem_limit` 字段在部分群晖 compose 版本上不被支持、会直接报错，因此文件里
 默认注释掉了；确认你的 DSM 能吃再打开。
+
+### 7. Windows 换行符（CRLF）→ 一串迷惑报错
+
+**从 Windows 传到 NAS 的文件是 CRLF 行尾，Linux 下会引发三类看似无关的错误**，
+实测全部踩过：
+
+| 现象 | 根因 |
+| --- | --- |
+| `/usr/bin/env: 'bash\r': No such file or directory` | shell 脚本 shebang 行末多了 `\r`，找 `bash\r` 这个程序 |
+| `load config: parse config: invalid character 'ï' after object key:value pair` | JSON 行尾的 `\r` 是非法字符，Go 报的位置还带有误导性 |
+| 脚本行为诡异 / 参数带 `\r` | 同类问题 |
+
+**注意**：`ï` **不是 BOM**。用 `head -c 3 config.json | xxd` 可排除 BOM
+（BOM 会显示 `ef bb bf`；正常应是 `7b` 即 `{`）。
+
+一次性修复（在 NAS 上对项目目录执行）：
+
+```bash
+cd "$PROJ"
+find . -type f \( -name '*.sh' -o -name '*.json' -o -name '*.yml' -o -name '*.md' -o -name '*.go' \) \
+  -exec sed -i 's/\r$//' {} +
+python3 -m json.tool config.json > /dev/null && echo "✅ config.json 合法"
+```
+
+**从源头避免**：本机打包时先转换行尾再打包（见「部署步骤 1 · 方式二」），
+比事后在 NAS 上救火省事得多。
+
+### 8. 假凭证 → 服务正常但拉模型报 401
+
+如果把文档里的中文占位符照抄进命令：
+
+```bash
+./addkey.sh ck_你的key 备注名        # ❌ 字面量，无效
+```
+
+会生成一个 `api_key` 值为 `ck_你的key` 的凭证文件。**服务能正常启动、健康检查也通过**，
+但拉模型时报：
+
+```
+models: all accounts fetch failed (models /v3/config http 401: {"message":"invalid_format"})
+```
+
+删除并加真 key（真 key 是 `ck_` 开头的实际字符串）：
+
+```bash
+sudo rm auths/codebuddy-备注名.json
+./addkey.sh ck_真实key 我的账号
+```
+
+或直接用管理后台「自动授权登录」（见「部署步骤 5」）。
 
 ---
 
@@ -229,13 +414,41 @@ docker compose -f docker-compose.nas.yml restart
 
 ## 六、日常更新与备份
 
-NAS 侧没有用 `deploy.sh`（它按固定容器名工作）。手动更新即可：
+NAS 侧**不用 `deploy.sh`**（它按固定容器名工作）。推荐的更新闭环是
+「**本机改代码 → 本机验证 → 打包传 NAS → 解包重启**」：
+
+**本机**（Git Bash）：
 
 ```bash
-cd /volume1/docker/workbuddy2api
-git pull --ff-only
-docker compose -f docker-compose.nas.yml up -d --build
+# 1. 改完代码，本地跑测试
+go test ./...
+
+# 2. 打包（含 CRLF→LF 转换，见「部署步骤 1 · 方式二」）
+tar czf /tmp/wb2api-src.tar.gz \
+  --exclude='./.git' --exclude='./auths' --exclude='./data' --exclude='./config.json' .
+tar xzf /tmp/wb2api-src.tar.gz -C /tmp/wb2api-lf
+find /tmp/wb2api-lf -type f \( -name '*.sh' -o -name '*.json' -o -name '*.yml' -o -name '*.go' \) \
+  -exec sed -i 's/\r$//' {} +
+tar czf /tmp/wb2api-src.tar.gz -C /tmp/wb2api-lf .
+scp /tmp/wb2api-src.tar.gz <用户名>@<NAS-IP>:/volume2/docker_ssd/workbuddy2api/
 ```
+
+**NAS 上**：
+
+```bash
+cd "$PROJ"
+tar xzf wb2api-src.tar.gz && rm wb2api-src.tar.gz   # 覆盖代码（不动 config/auths/data）
+
+chmod 755 . && chmod -R a+r .                        # 新文件权限会重置，重跑一遍
+python3 -m json.tool config.json > /dev/null && echo "✅ JSON 仍合法"
+
+sudo docker compose -f docker-compose.nas.yml up -d --build
+sudo docker logs --tail 15 workbuddy2api-cb2api-1
+```
+
+> ⚠️ `tar` 解包**只覆盖同名文件，不会删除**已从源码中移除的文件。
+> 若本次改动删掉了某些文件，NAS 上会残留旧副本；对 Go 编译一般无影响，
+> 需要彻底干净时用 `sudo docker compose ... down` 后从头解包。
 
 凭证/状态/配置是挂载进容器的宿主文件，**重建容器不会丢账号和冷却状态**。
 
@@ -252,36 +465,33 @@ docker compose -f docker-compose.nas.yml up -d --build
 
 **方式一：源码回退后重建（最可靠）**
 
+本机保留最近一两版 tar 包，回滚时重新传过去解包重建：
+
 ```bash
-cd /volume1/docker/workbuddy2api
-git log --oneline -5                  # 找到上一个可用的 commit
-git checkout <上一个commit>
-docker compose -f docker-compose.nas.yml up -d --build
-# 问题修复后回到分支：
-git checkout main && git pull --ff-only
-docker compose -f docker-compose.nas.yml up -d --build
+cd "$PROJ"
+tar xzf wb2api-src.tar.gz && rm wb2api-src.tar.gz   # 换成上一版的包
+chmod 755 . && chmod -R a+r .
+sudo docker compose -f docker-compose.nas.yml up -d --build
 ```
 
 `auths/`、`data/`、`config.json` 是挂载文件，回退源码不会动它们。
 
-**方式二：部署前主动留 tag（想随时切回旧镜像时用）**
+**方式二：更新前主动留镜像 tag（想随时切回旧镜像时用）**
 
 更新前先把当前镜像存一份：
 
 ```bash
-docker tag workbuddy2api-nas:latest workbuddy2api-nas:rollback-$(date +%F-%H%M)
-git pull --ff-only
-docker compose -f docker-compose.nas.yml up -d --build
+sudo docker tag workbuddy2api-nas:latest workbuddy2api-nas:rollback-$(date +%F-%H%M)
 ```
 
-需要回滚时，把两条命令里的镜像名对调即可：
+需要回滚时，把镜像名对调即可：
 
 ```bash
-docker tag workbuddy2api-nas:rollback-<你记下的时间戳> workbuddy2api-nas:latest
-docker compose -f docker-compose.nas.yml up -d --no-build
+sudo docker tag workbuddy2api-nas:rollback-<你记下的时间戳> workbuddy2api-nas:latest
+sudo docker compose -f docker-compose.nas.yml up -d --no-build
 ```
 
-这种方式不用动 git 工作区，但需要**在更新前主动执行**——忘了打 tag 就只剩方式一。
+方式二不用动源码，但**必须在更新前主动执行** —— 忘了打 tag 就只能走方式一。
 
 ### 备份
 
@@ -295,13 +505,19 @@ tar czf cb2api-backup-$(date +%F).tar.gz auths data config.json
 
 ## 七、排错命令速查
 
+以下命令均在 `$PROJ` 目录下执行，注意群晖需要 `sudo`。
+容器名固定为 `workbuddy2api-cb2api-1`（compose 按「项目名-服务名-序号」生成），
+也可以直接用 `$(sudo docker compose -f docker-compose.nas.yml ps -q cb2api)` 取 ID。
+
 ```bash
-docker compose -f docker-compose.nas.yml ps            # 状态
-docker compose -f docker-compose.nas.yml logs -f cb2api # 实时日志
-docker compose -f docker-compose.nas.yml restart        # 重启
-docker compose -f docker-compose.nas.yml down           # 停止并删除容器（不动挂载目录）
-docker compose -f docker-compose.nas.yml config         # 校验编排文件语法
-docker exec -it $(docker compose -f docker-compose.nas.yml ps -q cb2api) sh  # 进容器
+sudo docker ps --filter name=workbuddy2api-cb2api-1     # 状态（看 Up/healthy）
+sudo docker logs --tail 50 workbuddy2api-cb2api-1       # 最近日志
+sudo docker logs -f workbuddy2api-cb2api-1              # 实时日志（Ctrl+C 退出）
+sudo docker exec -it workbuddy2api-cb2api-1 sh          # 进容器
+
+sudo docker compose -f docker-compose.nas.yml restart   # 重启
+sudo docker compose -f docker-compose.nas.yml down      # 停止并删除容器（不动挂载目录）
+sudo docker compose -f docker-compose.nas.yml config    # 校验编排文件语法
 ```
 
 进容器后可直接验证内置资源：
@@ -309,3 +525,13 @@ docker exec -it $(docker compose -f docker-compose.nas.yml ps -q cb2api) sh  # �
 ```bash
 wget -qO- http://127.0.0.1:7865/healthz
 ```
+
+**按日志关键字定位问题**：
+
+| 日志内容 | 去看 |
+| --- | --- |
+| `permission denied` | 踩坑清单 第 2 条（权限，注意父目录） |
+| `invalid character 'ï'` | 踩坑清单 第 7 条（CRLF 行尾） |
+| `http 401 / invalid_format` | 踩坑清单 第 8 条（凭证无效） |
+| `no such file or directory`（compose 报） | 确认在 `$PROJ` 下执行、文件名拼写正确 |
+| `permission denied ... docker.sock` | 前置条件 第 2 点（加 `sudo`） |
