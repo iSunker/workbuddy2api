@@ -334,7 +334,7 @@ network icebears-net declared as external, but could not be found
 `docker run` 创建的同名容器打架。
 
 > 因此根目录 `deploy.sh` 中按 `codebuddy2api` 这个名字做的检查/备份逻辑，
-> 在 NAS 上**不适用**。NAS 侧更新请见第六节。
+> 在 NAS 上**不适用**。NAS 侧更新请见第七节。
 
 ### 4. 端口被占用
 
@@ -475,7 +475,166 @@ tar tzf /var/services/homes/$USER/cb2api-backup-$(date +%F).tar.gz | grep auths/
 
 ---
 
-## 五、安全提醒
+## 五、本机 + NAS 双实例并行（PowerShell 分流）
+
+常见场景：**本机 Docker 跑一个，NAS 上也跑一个**，想开两个 PowerShell 窗口分别指向它们。
+做法是在 profile 里放几个切换函数 —— 因为 PowerShell 的环境变量是**进程级**的，
+两个窗口天然隔离，不需要额外配置。
+
+### 1. 装到 profile
+
+`notepad $PROFILE`（文件不存在就 `New-Item -ItemType File -Path $PROFILE -Force`），
+把下面整段**追加**到末尾：
+
+```powershell
+# ===== workbuddy2api 双实例分流 =====
+# 用法：新窗口里跑 wb-use-local 或 wb-use-nas，再启动客户端。
+#       不确定当前窗口指向谁时，跑 wb-which。
+
+$__wbLocalDir = 'D:\Projects\workbuddy2api'   # ← 本机源码目录
+$__wbNasBase  = 'http://192.168.0.7:7865/v1'  # ← NAS 地址与端口
+
+function wb-use-local {
+    $cfg = Join-Path $__wbLocalDir 'config.json'
+    if (-not (Test-Path -LiteralPath $cfg)) { Write-Warning "找不到本机配置: $cfg"; return }
+    $key = (Get-Content -LiteralPath $cfg -Raw | ConvertFrom-Json).api_key
+    if ([string]::IsNullOrWhiteSpace($key)) { Write-Warning "本机 config.json 里 api_key 为空"; return }
+    $env:OPENAI_BASE_URL = 'http://127.0.0.1:7865/v1'
+    $env:OPENAI_API_KEY  = $key
+    Write-Host "-> 已切到【本机】workbuddy  127.0.0.1:7865" -ForegroundColor Green
+}
+
+function wb-use-nas {
+    $key = $env:WB_NAS_KEY            # 函数内实时读，设置后立即生效
+    if ([string]::IsNullOrWhiteSpace($key)) {
+        Write-Warning "未设置 NAS 的 api_key。先执行：`$env:WB_NAS_KEY = '<NAS 上的 key>'"
+        return
+    }
+    $env:OPENAI_BASE_URL = $__wbNasBase
+    $env:OPENAI_API_KEY  = $key
+    Write-Host "-> 已切到【NAS】workbuddy  192.168.0.7:7865" -ForegroundColor Yellow
+}
+
+function wb-which {
+    if ([string]::IsNullOrWhiteSpace($env:OPENAI_BASE_URL)) {
+        Write-Host "当前窗口未指向任何 workbuddy（环境变量为空）" -ForegroundColor DarkGray
+        return
+    }
+    $shown = if ($env:OPENAI_API_KEY.Length -ge 8) { $env:OPENAI_API_KEY.Substring(0,8) + '...' } else { '(过短)' }
+    Write-Host "BASE_URL = $env:OPENAI_BASE_URL"
+    Write-Host "API_KEY  = $shown"
+}
+
+# PS 5.1 的 Invoke-RestMethod 不发 charset=utf-8，中文响应会变乱码，
+# 故统一用 HttpWebRequest 显式按 UTF-8 收发。
+function Invoke-WbJson {
+    param([Parameter(Mandatory)][string]$Uri, [string]$Method='Get',
+          [string]$Body, [hashtable]$Headers)
+    $req = [System.Net.HttpWebRequest]::Create($Uri)
+    $req.Method = $Method; $req.Timeout = 180000
+    if ($Headers) { foreach ($k in $Headers.Keys) { $req.Headers[$k] = $Headers[$k] } }
+    if ($Body) {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($Body)
+        $req.ContentType = 'application/json; charset=utf-8'
+        $req.ContentLength = $bytes.Length
+        $st = $req.GetRequestStream()
+        try { $st.Write($bytes, 0, $bytes.Length) } finally { $st.Close() }
+    }
+    try { $resp = $req.GetResponse() }
+    catch [System.Net.WebException] { $resp = $_.Exception.Response; if (-not $resp) { throw } }
+    $sr = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
+    try { $text = $sr.ReadToEnd() } finally { $sr.Close(); $resp.Close() }
+    return ($text | ConvertFrom-Json)
+}
+
+function wb-ping {
+    if ([string]::IsNullOrWhiteSpace($env:OPENAI_BASE_URL)) { Write-Warning "先跑 wb-use-local 或 wb-use-nas"; return }
+    $u = ($env:OPENAI_BASE_URL -replace '/v1/?$','') + '/healthz'
+    try { Invoke-WbJson -Uri $u -Headers @{ Authorization = "Bearer $env:OPENAI_API_KEY" } }
+    catch { Write-Warning "连不上 $u : $($_.Exception.Message)" }
+}
+
+function wb {
+    param([Parameter(ValueFromRemainingArguments)][string[]]$Prompt)
+    if ([string]::IsNullOrWhiteSpace($env:OPENAI_BASE_URL)) { Write-Warning "先跑 wb-use-local 或 wb-use-nas"; return }
+    if (-not $Prompt) { $Prompt = @('说一个字：好') }
+    $body = @{ model='auto'; messages=@(@{role='user'; content=($Prompt -join ' ')}) } | ConvertTo-Json -Depth 5
+    try {
+        $r = Invoke-WbJson -Uri ($env:OPENAI_BASE_URL + '/chat/completions') -Method 'Post' `
+             -Body $body -Headers @{ Authorization = "Bearer $env:OPENAI_API_KEY" }
+        $r.choices[0].message.content
+    } catch { Write-Warning "请求失败: $($_.Exception.Message)" }
+}
+```
+
+> ⚠️ **profile 有语法错会让每个新窗口都报错**。追加后先自检：
+> ```powershell
+> $err=$null; [void][System.Management.Automation.Language.Parser]::ParseFile($PROFILE,[ref]$null,[ref]$err)
+> if ($err.Count) { $err } else { "PARSE OK" }
+> ```
+> profile 是 **UTF-8 带 BOM** 保存的，别用会改编码的编辑器覆盖，否则中文注释会乱码。
+
+### 2. 用法
+
+```powershell
+# 窗口 1 —— 指向本机（key 自动从本机 config.json 读）
+wb-use-local
+wb-which          # 确认指向 127.0.0.1
+wb-ping           # 打 healthz，确认真连通
+wb "你好"          # 直接对话
+
+# 窗口 2 —— 指向 NAS（首次要先给 key）
+$env:WB_NAS_KEY = "<NAS 上的 api_key>"
+wb-use-nas
+wb-which
+wb-ping
+```
+
+NAS 的 key 获取方式（在 NAS 上执行）：
+`python3 -c "import json;print(json.load(open('config.json'))['api_key'])"`
+
+想让 `WB_NAS_KEY` 永久生效，把那行赋值写进 profile 末尾即可 —— 但**不推荐**，
+key 明文躺在 profile 里不如每次手输或用密码管理器。
+
+### 3. 三个容易踩的点
+
+| 坑 | 说明 |
+| --- | --- |
+| **两个实例的 `api_key` 不同** | 本机与 NAS 的 `config.json` 各自独立生成，key 不通用，别拿一个打两边 |
+| **`$env:` 只在当前窗口有效** | 新开窗口就没了。这是特性（正好实现分流），但也容易误以为"切过去了"——用 `wb-which` 防呆 |
+| **`Invoke-RestMethod` 中文乱码** | PS 5.1 不发 `charset=utf-8` 也不按 UTF-8 解响应，中文回复会变成一串 `?`。上面的 `wb`/`wb-ping` 已改用 `Invoke-WbJson` 规避 |
+
+> 验证编码是否正常：让它"只输出四个字：你好世界"，应得到长度 4、
+> 码点为 `U+4F60 U+597D U+4E16 U+754C`。若在 Git Bash 里看是乱码、
+> 但在真 PowerShell 窗口里正常，那是**控制台代码页**问题，不是程序问题。
+
+### 4. 与 CC Switch / claude-code-router 的关系
+
+若本机同时装了 **CC Switch** 或 **claude-code-router (ccr)**，注意它们**不冲突，但职责不同**：
+
+| 组件 | 作用 | 是否读 `OPENAI_*` 环境变量 |
+| --- | --- | --- |
+| 本文的 `wb-*` 函数 | 手动 curl 式调用 / 给读 env 的 CLI 分流 | ✅ 读 |
+| CC Switch | GUI 管理多个 Provider，**会改写 `~/.claude/settings.json`** | ❌ 不读 |
+| claude-code-router | 把 Claude Code 的 Anthropic 协议转成 OpenAI Chat | ❌ 不读 |
+
+**关键区别**：`wb-*` 只动**当前窗口的环境变量**，退出即失效，不碰任何配置文件；
+而 CC Switch 和 ccr 都在**持久化改写 `~/.claude/settings.json`**，两者会互相覆盖 ——
+**装了两个就要择一**，别同时启用（表现为"切了没生效"）。CC Switch 若开了
+`enableLocalProxy`，它会占一个本地端口（如 15721）并让 Claude Code 指向它，
+此时 `wb-*` 函数仍可独立使用，两者井水不犯河水。
+
+> 排查旧配置遗留：ccr 的 `config.json` 里 `api_base_url` 若指向一个**没人监听的端口**
+> （例如 `7863`，而实际服务在 `7865`），表现为 Claude Code 一直连不上但看不出原因。
+> 确认端口是否真的在听：
+> ```powershell
+> netstat -ano | Select-String ":786[0-9]"
+> ```
+> 有 `LISTENING` 才算活着；`curl` 返回 `http_code=000` 即失败。
+
+---
+
+## 六、安全提醒
 
 - **`/admin` 会向页面注入真实网关 Key**（`window.__API_KEY__`），务必只在内网开放，
   不要直接端口映射到公网。需要外网访问时，套 NAS 自带的反向代理并自加一层鉴权。
@@ -483,10 +642,11 @@ tar tzf /var/services/homes/$USER/cb2api-backup-$(date +%F).tar.gz | grep auths/
   注意加密，不要随手丢进公共网盘。
 - **不要用同一个 `ck_` Key 在两台机器上并发跑**（例如本机 Docker 和 NAS 同时用一份凭证），
   容易触发上游限流风控，两台都受影响。NAS 上建议单独 `addkey.sh` 添加独立 Key。
+  **这一条在本机 + NAS 双实例场景下尤其容易踩** —— 本机与 NAS 请使用**不同的账号/凭证**。
 
 ---
 
-## 六、日常更新与备份
+## 七、日常更新与备份
 
 NAS 侧**不用 `deploy.sh`**（它按固定容器名工作）。推荐的更新闭环是
 「**本机改代码 → 本机验证 → 打包传 NAS → 解包重启**」：
@@ -583,7 +743,7 @@ tar tzf /var/services/homes/$USER/cb2api-backup-$(date +%F).tar.gz | grep auths/
 
 ---
 
-## 七、排错命令速查
+## 八、排错命令速查
 
 以下命令均在 `$PROJ` 目录下执行，注意群晖需要 `sudo`。
 容器名固定为 `workbuddy2api-cb2api-1`（compose 按「项目名-服务名-序号」生成），
@@ -615,3 +775,5 @@ wget -qO- http://127.0.0.1:7865/healthz
 | `http 401 / invalid_format` | 踩坑清单 第 8 条（凭证无效） |
 | `no such file or directory`（compose 报） | 确认在 `$PROJ` 下执行、文件名拼写正确 |
 | `permission denied ... docker.sock` | 前置条件 第 2 点（加 `sudo`） |
+| Windows 终端里中文变 `?` | 第五节 第 3 条（PS 5.1 编码，用 `wb` 函数或看码点确认） |
+| Claude Code 连不上，但服务明明在跑 | 第五节 第 4 条（ccr/CC Switch 配置指向了没监听的端口） |
