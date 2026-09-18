@@ -228,28 +228,45 @@ cd "$PROJ"
 # 1) 容器状态：应为 Up (healthy)
 sudo docker ps --filter name=workbuddy2api-cb2api-1
 
-# 2) 健康检查（容器内，不经宿主端口）
+# 2) 凭证状态（权威指标，见下）
 sudo docker exec workbuddy2api-cb2api-1 wget -qO- http://127.0.0.1:7865/healthz
 
-# 3) 模型列表（验证凭证真的能用，这一步最关键）
+# 3) 端到端实测：真发一次对话请求
 KEY=$(python3 -c "import json;print(json.load(open('config.json'))['api_key'])")
-curl -s -H "Authorization: Bearer $KEY" http://<NAS-IP>:7865/v1/models
+curl -s -X POST http://<NAS-IP>:7865/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"model":"auto","messages":[{"role":"user","content":"说一个字：好"}],"max_tokens":10}'
 ```
 
 **实测的正常输出**：
 
 ```json
-// 第 2 步
+// 第 2 步：accounts / healthy 都应为 1
 {"accounts":1,"has_api_key":true,"healthy":1,"status":"ok","upstream_base":"https://copilot.tencent.com"}
 
-// 第 3 步（节选，共 19 个模型）
-{"data":[{"id":"auto","display_name":"自动（Auto）",...},
-         {"id":"deepseek-v4-pro","cost_factor":0.51,...},
-         {"id":"glm-5.3","cost_factor":0.79,...}],"object":"list"}
+// 第 3 步：拿到模型真实回复
+{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"好","role":"assistant"}}],
+ "model":"auto","usage":{"prompt_tokens":18,"completion_tokens":1,"total_tokens":19}}
 ```
 
-第 3 步能返回模型列表 = **凭证有效、整条链路打通**。若返回 401 或
-`invalid_format`，见「踩坑清单」第 8 条（多半是凭证无效）。
+**判断标准（三者层层递进）**：
+
+| 指标 | 含义 |
+| --- | --- |
+| `healthz` 的 `accounts` | 加载到的凭证文件数。为 0 说明没凭证 |
+| `healthz` 的 `healthy` | 其中可用的数量。为 0 说明凭证都不可用 |
+| 第 3 步的回复 | **唯一可信的端到端验证** —— 能返回内容即真打通 |
+
+> ⚠️ **不要用 `/v1/models` 判断凭证是否有效**。该接口有内置 fallback 模型表，
+> **0 个凭证时照样返回完整模型列表**，看起来"正常"实则根本没账号可用。
+> 详见「踩坑清单」第 9 条。
+
+常见失败返回：
+
+```json
+{"error":{"code":"no_healthy_account","message":"all accounts unavailable (cooling/disabled)"}}
+```
+→ 凭证数为 0 或全部不可用，见「踩坑清单」第 8 条。
 
 浏览器打开 `http://<NAS-IP>:7865/admin` 能看到管理页即部署成功。
 
@@ -384,20 +401,77 @@ python3 -m json.tool config.json > /dev/null && echo "✅ config.json 合法"
 ```
 
 会生成一个 `api_key` 值为 `ck_你的key` 的凭证文件。**服务能正常启动、健康检查也通过**，
-但拉模型时报：
+但实际发对话请求时报：
 
 ```
 models: all accounts fetch failed (models /v3/config http 401: {"message":"invalid_format"})
 ```
 
-删除并加真 key（真 key 是 `ck_` 开头的实际字符串）：
+处理（**先看内容确认是假凭证，再删**）：
 
 ```bash
-sudo rm auths/codebuddy-备注名.json
-./addkey.sh ck_真实key 我的账号
+ls auths/                                   # 有哪些凭证文件
+sudo cat auths/codebuddy-备注名.json        # 确认 api_key 是不是中文占位符
+sudo rm auths/codebuddy-备注名.json         # 确认后再删
+./addkey.sh ck_真实key 我的账号              # 真 key 是 ck_ 开头的实际字符串
 ```
 
 或直接用管理后台「自动授权登录」（见「部署步骤 5」）。
+
+### 9. 别用 `/v1/models` 判断凭证是否有效
+
+**`GET /v1/models` 有内置 fallback 模型表**：即使 `auths/` 里一个凭证都没有，
+它照样返回完整模型列表（实测 19 个）。因此：
+
+```
+模型列表能返回  ≠  凭证有效    ← 这是个陷阱
+```
+
+**凭证状态的权威指标**：
+
+```bash
+# accounts = 加载到的凭证数；healthy = 其中可用的数量
+sudo docker exec workbuddy2api-cb2api-1 wget -qO- http://127.0.0.1:7865/healthz
+# {"accounts":1,"has_api_key":true,"healthy":1,...}   ← 正常
+
+sudo docker logs --tail 20 workbuddy2api-cb2api-1 | grep credential
+# loaded 1 credential(s) from /app/auths               ← 正常
+# loaded 0 credential(s) ... no credentials yet        ← 没凭证
+```
+
+`accounts:0` 时发对话请求会得到：
+
+```json
+{"error":{"code":"no_healthy_account","message":"all accounts unavailable (cooling/disabled)"}}
+```
+
+**唯一可信的端到端验证**是真发一次 `POST /v1/chat/completions`（见「三、验证」第 3 步）。
+
+### 10. 凭证文件：删不得，先备份
+
+`auths/` 下的凭证文件**属主是容器用户 uid 10001**，你的普通用户读不了，
+所以：
+
+- 查看内容要 `sudo cat`，删除要 `sudo rm`
+- **普通 `tar` 备份会因权限被跳过** —— 必须加 `sudo`：
+
+```bash
+cd "$PROJ"
+# ❌ 会漏掉 auths/（tar 报 Cannot open: Permission denied）
+tar czf ~/backup.tar.gz auths data config.json
+
+# ✅ 正确：加 sudo，并验证包内确实含凭证
+sudo tar czf /var/services/homes/$USER/cb2api-backup-$(date +%F).tar.gz auths data config.json
+sudo chown "$USER:$USER" /var/services/homes/$USER/cb2api-backup-$(date +%F).tar.gz
+tar tzf /var/services/homes/$USER/cb2api-backup-$(date +%F).tar.gz | grep auths/
+```
+
+> ⚠️ 最后一步**必须能看到 `auths/codebuddy-*.json`**，否则备份是残缺的、
+> 关键时刻恢复不了。
+
+**删除凭证是高危操作**：文件里可能承载着 OAuth 绑号结果（如 Apple ID 登录产生的
+`codebuddy-xxx@privaterelay.appleid.com.json`）。删掉就得重新绑号。
+**删之前务必先 `ls` + `sudo cat` 确认内容，或先做一份带 `sudo` 的备份。**
 
 ---
 
@@ -495,10 +569,16 @@ sudo docker compose -f docker-compose.nas.yml up -d --no-build
 
 ### 备份
 
-只需这三个（`auths/`、`data/`、`config.json` 就是镜像外的全部状态）：
+只需这三个（`auths/`、`data/`、`config.json` 就是镜像外的全部状态）。
+**必须加 `sudo`** —— 凭证文件属主是 uid 10001，普通用户读不到（详见「踩坑清单」第 10 条）：
 
 ```bash
-tar czf cb2api-backup-$(date +%F).tar.gz auths data config.json
+cd "$PROJ"
+sudo tar czf /var/services/homes/$USER/cb2api-backup-$(date +%F).tar.gz auths data config.json
+sudo chown "$USER:$USER" /var/services/homes/$USER/cb2api-backup-$(date +%F).tar.gz
+
+# 验证包内确实含凭证，否则备份无效
+tar tzf /var/services/homes/$USER/cb2api-backup-$(date +%F).tar.gz | grep auths/
 ```
 
 ---
