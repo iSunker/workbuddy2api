@@ -632,6 +632,9 @@ key 明文躺在 profile 里不如每次手输或用密码管理器。
 > ```
 > 有 `LISTENING` 才算活着；`curl` 返回 `http_code=000` 即失败。
 
+> 📄 **ccr 的彻底清理与 CC Switch 覆盖坑**（配置被反复"复活"、`apiKeyHelper` 指向已删文件等），
+> 单独成文：见 [`ccr-removal-and-ccswitch.md`](./ccr-removal-and-ccswitch.md)。
+
 ---
 
 ## 六、安全提醒
