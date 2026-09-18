@@ -12,3 +12,10 @@ config.json
 
 # 临时脚本
 tmp_*.py
+
+# 本地记忆/工作目录（不入库）
+.workbuddy-ai/
+
+# 传输用打包产物（不入库，避免「包中套包」）
+*.tar.gz
+*.tgz
