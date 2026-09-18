@@ -584,11 +584,16 @@ wb-ping           # 打 healthz，确认真连通
 wb "你好"          # 直接对话
 
 # 窗口 2 —— 指向 NAS（首次要先给 key）
-$env:WB_NAS_KEY = "<NAS 上的 api_key>"
+$env:WB_NAS_KEY = "NAS 上 config.json 里的 api_key"   # ⚠️ 不要加尖括号，见下
 wb-use-nas
 wb-which
 wb-ping
 ```
+
+> ⚠️ **不要把 `<>` 抄进命令**。文档里写 `<NAS 上的 key>` 是用尖括号表示「占位」，
+> 真值是**不含尖括号**的字符串。写成 `$env:WB_NAS_KEY = "<abc...>"`
+> 会把 `<` `>` 当成 key 的一部分，请求头变成 `Bearer <abc...>`，服务端直接 401。
+> 这和「踩坑清单」第 8 条（把中文占位符照抄）是同一类错误。
 
 NAS 的 key 获取方式（在 NAS 上执行）：
 `python3 -c "import json;print(json.load(open('config.json'))['api_key'])"`
@@ -596,7 +601,71 @@ NAS 的 key 获取方式（在 NAS 上执行）：
 想让 `WB_NAS_KEY` 永久生效，把那行赋值写进 profile 末尾即可 —— 但**不推荐**，
 key 明文躺在 profile 里不如每次手输或用密码管理器。
 
-### 3. 三个容易踩的点
+### 3. 分清「管手」和「管配置」两件事
+
+这一节最容易误解，**务必看明白**：
+
+| | 受谁控制 | 切到 NAS 后会影响它吗 |
+| --- | --- | --- |
+| **`wb` 函数**（你手动发的请求） | 当前窗口的 `$env:OPENAI_*` | ✅ 会，这就是它的用途 |
+| **Claude Code / Codex**（真正的客户端） | `~/.claude/settings.json`、`~/.codex/config.toml` | ❌ **完全不受影响** |
+
+**关键结论**：`wb-*` 函数只动**当前 PowerShell 窗口的环境变量**，而 Claude Code /
+Codex 读的是**配置文件**（见第五节的 CC Switch 部分）。所以：
+
+```
+在本窗口敲了 wb-use-nas  →  再启动 Claude Code  →  它照样走配置文件里那条链路（本机）
+```
+
+一句话记法：**`wb-*` 管「手」，Claude / Codex 管「配置」，两者无关。**
+如果你要改 Claude Code / Codex 的走向，得改配置文件或动 CC Switch，不是敲 `wb-use-*`。
+
+### 4. ★ 最容易踩的坑：两个 PowerShell 读不同的 profile
+
+Windows 上通常装了**两个 PowerShell**，它们读**两个不同的 profile 文件**：
+
+| PowerShell | 版本探测 | profile 路径 |
+| --- | --- | --- |
+| Windows PowerShell | `$PSVersionTable.PSEdition` = `Desktop` | `Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1` |
+| PowerShell 7+ | `$PSVersionTable.PSEdition` = `Core` | `Documents\PowerShell\Microsoft.PowerShell_profile.ps1` |
+
+**两个的提示符长得一模一样**（都是 `PS D:\Projects>`），肉眼分辨不出来。
+如果你只往其中一个装了函数，就会出现**"这个窗口行、那个窗口不行"**，
+而且重开窗口也没用 —— 因为那个窗口本来就去读另一个文件。
+
+**判断当前是哪个**：
+
+```powershell
+$PSVersionTable.PSVersion      # 5.1.x = Windows PowerShell；7.x = PowerShell 7
+$PROFILE                        # 直接看它到底读哪个文件
+```
+
+**两个都装上**（推荐：直接复制，保证编码与内容一致）：
+
+```powershell
+# 以 PowerShell 5.1 的 profile 为源，复制到 PS7 的位置
+$src = "$env:USERPROFILE\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1"
+$dst = "$env:USERPROFILE\Documents\PowerShell\Microsoft.PowerShell_profile.ps1"
+New-Item -ItemType Directory -Path (Split-Path $dst) -Force | Out-Null
+Copy-Item -LiteralPath $src -Destination $dst -Force
+```
+
+用**复制**而不是重写，是为了保住 UTF-8 BOM 与中文注释（手写容易把编码弄坏，导致中文乱码）。
+校验一致性：
+
+```powershell
+(Get-FileHash $src).Hash -eq (Get-FileHash $dst).Hash    # True 即一致
+```
+
+**验证函数真的加载了**（在目标窗口里）：
+
+```powershell
+Get-Command wb-use-local,wb-use-nas,wb-which,wb-ping,wb | Select-Object -ExpandProperty Name
+```
+
+> 以后若改了其中一个 profile（比如加新函数），**记得两边同步**，否则又会不一致。
+
+### 5. 三个容易踩的点
 
 | 坑 | 说明 |
 | --- | --- |
@@ -608,7 +677,7 @@ key 明文躺在 profile 里不如每次手输或用密码管理器。
 > 码点为 `U+4F60 U+597D U+4E16 U+754C`。若在 Git Bash 里看是乱码、
 > 但在真 PowerShell 窗口里正常，那是**控制台代码页**问题，不是程序问题。
 
-### 4. 与 CC Switch / claude-code-router 的关系
+### 6. 与 CC Switch / claude-code-router 的关系
 
 若本机同时装了 **CC Switch** 或 **claude-code-router (ccr)**，注意它们**不冲突，但职责不同**：
 
@@ -778,5 +847,6 @@ wget -qO- http://127.0.0.1:7865/healthz
 | `http 401 / invalid_format` | 踩坑清单 第 8 条（凭证无效） |
 | `no such file or directory`（compose 报） | 确认在 `$PROJ` 下执行、文件名拼写正确 |
 | `permission denied ... docker.sock` | 前置条件 第 2 点（加 `sudo`） |
-| Windows 终端里中文变 `?` | 第五节 第 3 条（PS 5.1 编码，用 `wb` 函数或看码点确认） |
-| Claude Code 连不上，但服务明明在跑 | 第五节 第 4 条（ccr/CC Switch 配置指向了没监听的端口） |
+| Windows 终端里中文变 `?` | 第五节 第 5 条（PS 5.1 编码，用 `wb` 函数或看码点确认） |
+| Claude Code 连不上，但服务明明在跑 | 第五节 第 6 条（ccr/CC Switch 配置指向了没监听的端口） |
+| `wb-` 开头的命令报「术语不被识别」 | 第五节 第 4 条（两个 PowerShell 读不同 profile） |
