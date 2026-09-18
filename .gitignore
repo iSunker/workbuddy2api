@@ -4,11 +4,20 @@ data/
 
 # 构建产物与二进制
 bin/
+**/bin/
 *.exe
 *.log
 
-# 本地配置（含 api_key 密钥）
+# 本地配置（含 api_key 密钥）；config.nas.json 同样含 NAS 网关密钥
 config.json
+config.nas.json
+
+# Claude Code 分流 profile（内含真实网关 api_key，禁止提交）
+# 仓库里只保留 *.example.json 模板。
+# 注意 git 的限制：目录一旦整体排除，就无法再用 ! 重新包含其中的文件，
+# 所以这里用「先排除目录内容 → 再重新包含模板 → 最后排除目录」的三段式写法。
+claude-profiles/*
+!claude-profiles/*.example.json
 
 # 临时脚本
 tmp_*.py

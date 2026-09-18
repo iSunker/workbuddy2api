@@ -1,0 +1,24 @@
+{
+  "//": "复制为 wb-nas.json，把 base/token 换成你 NAS 网关的地址与 api_key。",
+  "//2": "用法：claude --settings D:\\Projects\\workbuddy2api\\claude-profiles\\wb-nas.json",
+
+  "//3": "与 wb-local.json 的区别只有前两行：指向 NAS 网关、用 NAS 的 key。",
+  "//4": "两个 profile 指向各自独立的 auths/ 账号池，互不重复 —— 这就是双终端隔离。",
+
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://192.168.0.7:7865",
+    "ANTHROPIC_AUTH_TOKEN": "<NAS 网关的 api_key>",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+
+    "ANTHROPIC_MODEL": "deepseek-v4.1-flash",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4.1-flash[1M]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "deepseek-v4.1-flash",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4.1-flash[1M]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "deepseek-v4.1-flash",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4.1-flash[1M]",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "deepseek-v4.1-flash",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "deepseek-v4.1-flash[1M]",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME": "deepseek-v4.1-flash",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4.1-flash[1M]"
+  }
+}
