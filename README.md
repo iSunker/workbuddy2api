@@ -192,9 +192,24 @@ $env:ANTHROPIC_AUTH_TOKEN = '<你的网关api_key>'
 claude
 ```
 
-> **为什么这比转换层更适合「多实例分流」**：转换层（CC Switch）对同一个 app 类型只暴露**一个**本地端口，因此两个终端没法同时指向两个网关；而协议做进网关之后，**每个终端只要设一次 `ANTHROPIC_BASE_URL` 就锁死一个实例**，两个实例各用各的 `auths/`，账号池天然互不重复。
+> **为什么这比转换层更适合「多实例分流」**：转换层（CC Switch）对同一个 app 类型只暴露**一个**本地端口，因此两个终端没法同时指向两个网关；而协议做进网关之后，**每个终端只要在启动时指定自己的实例就锁死一个**，两个实例各用各的 `auths/`，账号池天然互不重复。
 >
-> 具体的双终端分流做法（含 Claude Code `--settings` 方案）见 [`docs/deploy-nas.md`](docs/deploy-nas.md) 第五节。
+> **注意用 `--settings` 而非环境变量**：`~/.claude/settings.json` 里 `env` 段的优先级
+> **高于进程环境变量**（Claude Code 自身设定），若该文件已被转换层写入
+> `ANTHROPIC_BASE_URL`，`$env:` 会被覆盖回去。命令行参数优先级更高：
+>
+> ```powershell
+> claude --settings .\profiles\instance-a.json   # 指向实例 A
+> claude --settings .\profiles\instance-b.json   # 指向实例 B
+> ```
+>
+> 两个 profile 内容形如 `{"env":{"ANTHROPIC_BASE_URL":"http://<host>:7865","ANTHROPIC_AUTH_TOKEN":"<该实例的 api_key>"}}`。
+> **恢复历史对话时也要带上 `--settings`**（`claude --settings <file> -c`）：
+> 会话文件存在本机、两个实例共享，但请求去向由启动参数决定，漏了会走转换层。
+>
+> 另需注意模型映射：客户端若不发上游认识的模型名（如 Claude Code 发 `claude-opus-5`），
+> 网关会按 `fallback_model` 回落；profile 里建议显式指定
+> `ANTHROPIC_MODEL` 等变量，避免落到能力较弱的兜底模型上。
 
 ---
 
