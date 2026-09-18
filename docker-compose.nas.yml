@@ -1,0 +1,65 @@
+# docker-compose.nas.yml — NAS（群晖 DSM / 威联通等）部署编排。
+#
+# 与另外两个编排文件的区别：
+#   - docker-compose.yml         本地开发：写死 container_name，映射 7865
+#   - docker-compose.server.yml  服务器生产：外部网络 icebears-net + nginx 反代，不发布端口
+#   - docker-compose.nas.yml     本文件：群晖「容器管理器 → 项目」直接导入，
+#                                不写死容器名（避免与同名编排打架），
+#                                显式兼容老版 DSM 的 compose 解析
+#
+# 用法（在 NAS 上的源码目录里）：
+#   cp config.example.json config.json   # 然后改掉 api_key！
+#   mkdir -p auths data
+#   ./addkey.sh ck_xxxx 备注名           # 添加 CodeBuddy 凭证
+#   docker compose -f docker-compose.nas.yml up -d --build
+#
+# 群晖图形界面：容器管理器 → 项目 → 新增 → 选择本目录 → 它会自动识别
+#   docker-compose.nas.yml（若同时存在 docker-compose.yml 需手动指定文件名）。
+
+version: "3.8"
+
+services:
+  cb2api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # 不写 container_name：交由 compose 按「项目名-服务名」自动命名，
+    # 避免与服务器上的 codebuddy2api 或手工 docker run 的同名容器冲突。
+    # 群晖项目名若取 workbuddy2api，容器名即 workbuddy2api-cb2api-1。
+    image: workbuddy2api-nas:latest
+    restart: unless-stopped
+
+    ports:
+      # 仅内网访问：宿主端口:容器端口。7865 若被占用可改左边，如 "17865:7865"。
+      - "7865:7865"
+
+    environment:
+      TZ: Asia/Shanghai
+      # 配置也可走环境变量覆盖（优先级高于 config.json），此处留空不启用。
+      # CB2A_API_KEY: "改成你的网关密钥"
+      # CB2A_UPSTREAM_BASE: "https://copilot.tencent.com"
+
+    volumes:
+      # 挂载的三个路径是镜像外的全部状态，重建容器不受影响。
+      - ./auths:/app/auths        # 凭证目录（容器只需读）
+      - ./data:/app/data          # 冷却/用量状态（容器需写）
+      - ./config.json:/app/config.json:ro   # 只读；改完需重启容器才生效
+
+    # —— 权限相关 ——
+    # 镜像内以 uid 10001（app）运行，而群晖上挂载目录属主是 admin(1026)，
+    # 会导致写 data/state.json 失败。二选一：
+    #   (a) 在 NAS 上执行：sudo chown -R 10001:10001 data  （推荐，最小权限）
+    #   (b) 实在不方便就用下面的 user 指令以 root 运行（不推荐）
+    # user: "0:0"
+
+    # —— 资源限制 ——
+    # 注意：compose v3 里 mem_limit 是「非 swarm 模式」的扩展字段，
+    # 群晖部分版本不认，认的话可自行打开。
+    # mem_limit: 256m
+
+    # 健康检查由 Dockerfile 里的 HEALTHCHECK 提供，无需重复定义。
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
