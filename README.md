@@ -249,6 +249,7 @@ deploy.sh              服务器更新脚本（git pull + 重建 + 自检 + 回�
 docker-compose.server.yml  服务器生产编排（icebears-net，不发布宿主端口）
 docker-compose.nas.yml NAS 编排（不写死容器名，群晖容器管理器可直接导入）
 docs/deploy-nas.md     NAS 部署指南（步骤 / 踩坑 / 验证 / 排错 / 本机+NAS 双实例分流）
+docs/usage.md          使用手册（日常调用本机/NAS 的 Claude、恢复历史对话、常见问题速查）
 docs/ccr-removal-and-ccswitch.md  清理 ccr 与 CC Switch 覆盖坑（本机客户端接入环境）
 docs/admin-ui.png      管理后台界面截图
 Dockerfile / docker-compose.yml / config.example.json
