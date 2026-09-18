@@ -93,6 +93,54 @@ scp /tmp/wb2api-src.tar.gz <用户名>@<NAS-IP>:/volume2/docker_ssd/workbuddy2ap
 > 注意 `\\<NAS-IP>\<共享名>` 映射到的**真实卷路径**未必和 SSH 里看到的一致，
 > 拖完用 `ls -la "$PROJ"` 确认真到了预期位置。
 
+**方式三：`scp` 不通时用 wget 反向拉（实测可用，推荐作为兜底）**
+
+有时**本机连不上 NAS 的 22 端口**（`ssh: connect to host <NAS-IP> port 22: Connection refused`），
+但 NAS 的 SSH 其实是开着的 —— 只是本机到它的 22 不通（防火墙、SSH 端口改过、
+或只允许特定来源）。此时 `scp` 必然失败，但**445/139/5000/7865 通常都是通的**，
+于是可以让 **NAS 主动来本机取文件**：
+
+在本机（Git Bash）起一个临时 HTTP 服务，并查本机 IP：
+
+```bash
+# 1. 把包放在 /tmp，然后在该目录起服务
+cd /tmp && ls -la wb2api-src.tar.gz      # 确认包在
+python3 -m http.server 8899              # 前台运行，传完 Ctrl+C 停
+
+# 2. 另开一个 Git Bash 窗口查本机 IP（NAS 要能访问到它）
+powershell.exe -NoProfile -Command \
+  "Get-NetIPAddress -AddressFamily IPv4 | Where-Object { \$_.IPAddress -like '192.168.*' } | Select-Object -ExpandProperty IPAddress"
+# 假设输出 192.168.0.56
+```
+
+在 **NAS 的 SSH 会话**里（Termius / 本地 ssh 均可）：
+
+```bash
+cd /volume2/docker_ssd/workbuddy2api
+wget http://192.168.0.56:8899/wb2api-src.tar.gz
+ls -la wb2api-src.tar.gz          # ⚠️ 核对字节数与本机一致，不一致就是没下全
+```
+
+> **为什么用 wget 而不是 `scp`/`ssh`**：wget 走的是 **HTTP（本机→NAS 出向连接的反向）**，
+> 不依赖 NAS 的 SSH 端口，也不需要在 NAS 上装 ssh 客户端。实测在
+> 「本机 22 被拒、但 7865 能访问到 NAS」的环境下可直接跑通。
+>
+> 若 NAS 没有 `wget`（群晖精简系统可能有），改用 `curl -O <url>` 或：
+> ```bash
+> python3 -c "import urllib.request;urllib.request.urlretrieve('http://192.168.0.56:8899/wb2api-src.tar.gz','wb2api-src.tar.gz')"
+> ```
+
+排查本机→NAS 端口状况（决定该用哪种传输方式）：
+
+```bash
+# 在 Git Bash 里逐个探测（22=SSH、445/139=SMB、5000/5001=DSM、7865=网关）
+for p in 22 445 139 5000 5001 7865; do
+  timeout 3 bash -c "echo > /dev/tcp/<NAS-IP>/$p" 2>/dev/null \
+    && echo "  ✅ $p 开放" || echo "  ❌ $p 不通"
+done
+```
+
+
 再到 NAS 上解包：
 
 ```bash
@@ -847,6 +895,7 @@ wget -qO- http://127.0.0.1:7865/healthz
 | `http 401 / invalid_format` | 踩坑清单 第 8 条（凭证无效） |
 | `no such file or directory`（compose 报） | 确认在 `$PROJ` 下执行、文件名拼写正确 |
 | `permission denied ... docker.sock` | 前置条件 第 2 点（加 `sudo`） |
+| `ssh: connect ... port 22: Connection refused`（本机执行 scp 时） | 第二节 方式三（改用 wget 反向拉，或先探测端口） |
 | Windows 终端里中文变 `?` | 第五节 第 5 条（PS 5.1 编码，用 `wb` 函数或看码点确认） |
 | Claude Code 连不上，但服务明明在跑 | 第五节 第 6 条（ccr/CC Switch 配置指向了没监听的端口） |
 | `wb-` 开头的命令报「术语不被识别」 | 第五节 第 4 条（两个 PowerShell 读不同 profile） |
