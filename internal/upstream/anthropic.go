@@ -249,6 +249,7 @@ func usageTokens(u map[string]any) (int, int) {
 func StreamAsAnthropic(w io.Writer, r io.Reader, model string, tools any, wantThinking bool, flush func(), onUsage ...func(map[string]any)) error {
 	schemas := toolSchemas(tools)
 	msgID := newMessageID()
+	started := time.Now()
 	_ = writeAnthropicEvent(w, "message_start", map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
@@ -273,7 +274,16 @@ func StreamAsAnthropic(w io.Writer, r io.Reader, model string, tools any, wantTh
 	)
 
 	// 读完整段流：合并思考、收集正文 delta、合并工具调用。
+	// 注意：本实现刻意「先读完再下发」，因此客户端在 message_start 之后要一直等到
+	// 上游整段流结束才能看到第一个 content_block_delta。上游越慢（长思考、
+	// 大 system + 多工具），客户端空等越久，可能触发其流式空闲超时后重试。
+	// 这里记录首个 chunk 与整段流的耗时，便于定位这类「客户端只见重试、日志安静」的问题。
+	var firstChunk time.Time
 	err := ParseSSE(r, func(chunk map[string]any) error {
+		if firstChunk.IsZero() {
+			firstChunk = time.Now()
+			log.Printf("messages: upstream first chunk after %s", firstChunk.Sub(started).Round(time.Millisecond))
+		}
 		if u, ok := chunk["usage"].(map[string]any); ok {
 			finalUsage = mergeUsage(finalUsage, u)
 		}
@@ -402,8 +412,13 @@ func StreamAsAnthropic(w io.Writer, r io.Reader, model string, tools any, wantTh
 	for _, d := range textDeltas {
 		textLen += len(d)
 	}
-	log.Printf("messages stream done: model=%s stop=%s text_len=%d tool_calls=%d reasoning_len=%d out_tokens=%d",
-		model, stopReason, textLen, len(validCalls), reasoning.Len(), outTokens)
+	upstreamWait := time.Duration(0)
+	if !firstChunk.IsZero() {
+		upstreamWait = firstChunk.Sub(started)
+	}
+	log.Printf("messages stream done: model=%s stop=%s text_len=%d tool_calls=%d reasoning_len=%d out_tokens=%d upstream_first=%s total=%s",
+		model, stopReason, textLen, len(validCalls), reasoning.Len(), outTokens,
+		upstreamWait.Round(time.Millisecond), time.Since(started).Round(time.Millisecond))
 
 	if len(onUsage) > 0 && finalUsage != nil {
 		onUsage[0](finalUsage)
