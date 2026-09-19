@@ -10,15 +10,15 @@
     "ANTHROPIC_AUTH_TOKEN": "<NAS 网关的 api_key>",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 
-    "ANTHROPIC_MODEL": "deepseek-v4.1-flash",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4.1-flash[1M]",
+    "ANTHROPIC_MODEL": "claude-opus-5[1M]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5[1M]",
     "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "deepseek-v4.1-flash",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4.1-flash[1M]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5[1M]",
     "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "deepseek-v4.1-flash",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4.1-flash[1M]",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "deepseek-v4.1-flash",
-    "ANTHROPIC_DEFAULT_FABLE_MODEL": "deepseek-v4.1-flash[1M]",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-fable-5[1M]",
     "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME": "deepseek-v4.1-flash",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4.1-flash[1M]"
+    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5[1M]"
   }
 }

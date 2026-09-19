@@ -248,11 +248,63 @@ func IsSupportedModel(id string) bool {
 	return supportedModelSet[strings.ToLower(strings.TrimSpace(id))]
 }
 
+// claudeAliasTarget 客户端传入 Claude Code **内置模型名**时，实际转发给上游的模型。
+//
+// 背景：Claude Code 只有在模型名命中它自己的内置窗口表时才渲染上下文进度条
+// （分母 = 窗口大小）。而本网关的上游模型（deepseek-* 等）不在那张表里，
+// 所以用真实模型名反而**没有进度条**。
+// CC Switch 这类转换层之所以两者兼得，是因为它收 claude-opus-5[1M]、
+// 转发时替换成真实模型名——本网关现在做同一件事。
+//
+// 于是 profile 里可以写 ANTHROPIC_MODEL=claude-opus-5[1M]：
+// 界面显示 Claude 名（进度条有分母），上游收到 deepseek-v4.1-flash（模型正确）。
+const claudeAliasTarget = "deepseek-v4.1-flash"
+
+// claudeAliasPrefixes Claude 内置模型名前缀。归一化后形如 claude-opus-5、
+// claude-opus-5[1m]、claude-sonnet-5[1m]、claude-haiku-4-5。
+// 注意 [1M] 等窗口后缀在 NormalizeModelName 里会被原样保留（走 default 分支），
+// 故这里按前缀匹配，不要求整串相等。
+var claudeAliasPrefixes = []string{
+	"claude-opus-",
+	"claude-sonnet-",
+	"claude-haiku-",
+	"claude-fable-",
+}
+
+// stripWindowSuffix 去掉模型名里的窗口标注后缀（如 "[1M]" / "[200k]"）。
+// 归一化会保留方括号，留着会让匹配与日志都变难看。
+func stripWindowSuffix(s string) string {
+	if i := strings.IndexByte(s, '['); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return s
+}
+
+// resolveClaudeAlias 判断归一化后的模型名是否为 Claude 内置名，是则返回别名目标。
+func resolveClaudeAlias(normalized string) (string, bool) {
+	base := stripWindowSuffix(normalized)
+	for _, p := range claudeAliasPrefixes {
+		if strings.HasPrefix(base, p) {
+			return claudeAliasTarget, true
+		}
+	}
+	return "", false
+}
+
 // MapModelName 把客户端传入的模型名映射为上游可接受的模型。
-// 已支持的原样返回；不受支持的（如 claude-* / gpt-*）回落到 fallback，
-// 避免把无效模型透传给上游导致 400（11102/11128）并把账号池拖入冷却。
+//
+// 优先级：
+//  1. Claude Code 内置模型名（claude-opus-5[1M] 等）→ 别名目标（见 claudeAliasTarget）。
+//     放在最前是有意的：这类名字**永远不可能是**上游真实模型，先拦下才谈得上
+//     "界面显示 Claude 名 + 上游收真实模型"。
+//  2. 上游真实支持的模型名 → 原样透传。
+//  3. 其余（gpt-*、拼错的名字等）→ fallback，避免透传无效模型导致上游 400
+//     （11102/11128）并把账号逐个拖入冷却。
 func MapModelName(id, fallback string) (mapped string, rewritten bool) {
 	n := NormalizeModelName(id)
+	if target, ok := resolveClaudeAlias(n); ok {
+		return target, true
+	}
 	if IsSupportedModel(n) {
 		return n, false
 	}

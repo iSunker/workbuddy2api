@@ -534,3 +534,64 @@ func TestNormalizeModelName(t *testing.T) {
 		}
 	}
 }
+
+// TestMapModelNameClaudeAlias 覆盖「Claude Code 内置模型名 → 真实上游模型」的别名映射。
+//
+// 这是进度条特性的关键约定：客户端（profile 里 ANTHROPIC_MODEL）写 Claude 内置名，
+// 界面才有窗口分母可算；网关必须把它翻译成真实模型，否则会回落 hy4-preview
+// ——那正是给客户端显示 Claude 名却跑混元的糟糕状态。
+func TestMapModelNameClaudeAlias(t *testing.T) {
+	aliasCases := []string{
+		"claude-opus-5[1M]",
+		"claude-opus-5",
+		"claude-sonnet-5[1M]",
+		"claude-haiku-4-5",
+		"claude-fable-5[1M]",
+		"claude-opus-5[200k]", // 窗口后缀不影响别名
+		"Claude-Opus-5[1M]",   // 大小写不敏感
+	}
+	for _, in := range aliasCases {
+		got, rewritten := MapModelName(in, "hy4-preview")
+		if got != claudeAliasTarget {
+			t.Errorf("MapModelName(%q) = %q, want alias %q", in, got, claudeAliasTarget)
+		}
+		if !rewritten {
+			t.Errorf("MapModelName(%q) 应标记为 rewritten", in)
+		}
+	}
+
+	// 上游真实模型必须原样透传（不能被别名表或 fallback 吃掉）
+	for _, in := range []string{"deepseek-v4.1-flash", "deepseek-v4-pro", "hy4-preview", "glm-5.3"} {
+		got, rewritten := MapModelName(in, "hy4-preview")
+		if got != in {
+			t.Errorf("MapModelName(%q) = %q, want 原样透传", in, got)
+		}
+		if rewritten {
+			t.Errorf("MapModelName(%q) 不应标记为 rewritten", in)
+		}
+	}
+
+	// 既不是 Claude 内置名、也不是上游模型的，仍应回落 fallback
+	for _, in := range []string{"gpt-4o", "claude-opus", "some-typo-model", ""} {
+		got, rewritten := MapModelName(in, "hy4-preview")
+		if got != "hy4-preview" {
+			t.Errorf("MapModelName(%q) = %q, want fallback hy4-preview", in, got)
+		}
+		if !rewritten {
+			t.Errorf("MapModelName(%q) 应标记为 rewritten", in)
+		}
+	}
+}
+
+// TestMapModelNameRespectsFallback 别名优先级高于 fallback：
+// 即便 fallback 被配置成别的模型，claude-* 也必须走别名目标而不是 fallback。
+func TestMapModelNameRespectsFallback(t *testing.T) {
+	got, _ := MapModelName("claude-opus-5[1M]", "glm-5.3")
+	if got != claudeAliasTarget {
+		t.Errorf("别名应优先于 fallback，got %q want %q", got, claudeAliasTarget)
+	}
+	got2, _ := MapModelName("gpt-4o", "glm-5.3")
+	if got2 != "glm-5.3" {
+		t.Errorf("非别名应走配置的 fallback，got %q want glm-5.3", got2)
+	}
+}

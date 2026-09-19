@@ -5,23 +5,24 @@
   "//3": "注意：必须用 --settings 启动，不能用 $env:ANTHROPIC_BASE_URL ——",
   "//4": "      ~/.claude/settings.json 里的 env 段优先级更高，会把环境变量覆盖掉。",
 
-  "//5": "注意：模型映射不能省。缺了 ANTHROPIC_MODEL，Claude Code 会发 claude-opus-5，",
-  "//6": "      网关不认识就回落成 hy4-preview（混元），工具调用质量很差。",
+  "//5": "模型名用 Claude Code 内置名（claude-opus-5[1M] 等），界面才会显示上下文进度条",
+  "//6": "      （进度条分母 = 窗口，只认内置模型名）。网关会把它翻译成 deepseek-v4.1-flash",
+  "//7": "      发给上游；_MODEL_NAME 那几行是给界面显示的说明，两边别写反了。",
 
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:7865",
     "ANTHROPIC_AUTH_TOKEN": "<本机网关的 api_key>",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 
-    "ANTHROPIC_MODEL": "deepseek-v4.1-flash",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4.1-flash[1M]",
+    "ANTHROPIC_MODEL": "claude-opus-5[1M]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5[1M]",
     "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "deepseek-v4.1-flash",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4.1-flash[1M]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5[1M]",
     "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "deepseek-v4.1-flash",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4.1-flash[1M]",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "deepseek-v4.1-flash",
-    "ANTHROPIC_DEFAULT_FABLE_MODEL": "deepseek-v4.1-flash[1M]",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-fable-5[1M]",
     "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME": "deepseek-v4.1-flash",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4.1-flash[1M]"
+    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5[1M]"
   }
 }
