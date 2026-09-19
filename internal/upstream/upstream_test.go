@@ -443,6 +443,16 @@ func TestClassify(t *testing.T) {
 		{"404", 404, "", ErrNotFound},
 		{"500", 500, "", ErrServer},
 		{"418", 418, "", ErrClient},
+
+		// 11148 工具调用序列断裂：实测返回 400 + code 11148，必须优先于
+		// hardMarkers 判定，否则会被 "do not match" 之类措辞误判成配额不足。
+		{
+			"11148 broken tool sequence", 400,
+			`{"code":11148,"msg":"tool calls and tool results do not match, please start a new conversation and retry",` +
+				`"extError":{"code":"tool_call_sequence_broken","message":"tool calls and tool results do not match"}}`,
+			ErrBrokenToolSeq,
+		},
+		{"11148 by marker only", 400, `{"msg":"tool_call_sequence_broken"}`, ErrBrokenToolSeq},
 	}
 	for _, c := range cases {
 		if got := Classify(c.code, c.body); got != c.want {

@@ -20,6 +20,7 @@ const (
 	ErrServer               // 5xx
 	ErrClient               // 其他 4xx
 	ErrContentRejected      // 内容审核拒绝（11140 request illegal）— 用户侧问题，不冷却账号
+	ErrBrokenToolSeq        // 工具调用序列断裂（11148）— 会话历史问题，不冷却账号、换号无意义
 )
 
 func (k ErrKind) String() string {
@@ -40,6 +41,8 @@ func (k ErrKind) String() string {
 		return "client"
 	case ErrContentRejected:
 		return "content_rejected"
+	case ErrBrokenToolSeq:
+		return "broken_tool_sequence"
 	default:
 		return "none"
 	}
@@ -94,6 +97,18 @@ func Classify(status int, body string) ErrKind {
 		return ErrHardCredit
 	}
 	lower := strings.ToLower(body)
+	// 11148 = 工具调用序列断裂（tool_call_sequence_broken）。
+	//
+	// 会话历史里存在「孤儿 tool_calls」或「孤儿 tool 结果」（assistant 发起了调用但
+	// 没有配对的 tool 消息，或反之），上游强校验直接拒绝整条请求。
+	// 这是**请求体自身**的问题，与账号/配额无关：
+	//   - 冷却或禁用账号毫无意义（换号也一样 400，因为断链在 body 里）；
+	//   - 必须优先于 hardMarkers 判定——错误文案里带 "do not match"，
+	//     若被 hardMarkers 抢先会误判成「余额不足」而把账号冷却 12h。
+	// 调用方据此返回明确文案，提示用户新建会话。
+	if extractCode([]byte(body)) == brokenToolSeqCode || strings.Contains(lower, "tool_call_sequence_broken") {
+		return ErrBrokenToolSeq
+	}
 	for _, m := range hardMarkers {
 		if strings.Contains(lower, strings.ToLower(m)) || strings.Contains(body, m) {
 			return ErrHardCredit
@@ -152,6 +167,16 @@ func IsKind(err error, kind ErrKind) bool {
 
 // contentRejectedCode 上游内容审核拒绝的业务码（403 + 11140）。
 const contentRejectedCode = 11140
+
+// brokenToolSeqCode 上游「工具调用序列断裂」的业务码。
+//
+// 实测（2026-09）返回形态为 HTTP 400 + code 11148：
+//
+//	{"code":11148,"msg":"tool calls and tool results do not match, please start a new conversation and retry",
+//	 "extError":{"code":"tool_call_sequence_broken","message":"tool calls and tool results do not match, ..."}}
+//
+// 注意这是 400（不是 422/409），且属于**用户会话侧**问题——重试、换号、冷却都不解决。
+const brokenToolSeqCode = 11148
 
 // modelChannelBlockedCodes 上游用这些业务码表达「该账号/通道不批准此模型或调用」。
 // 典型如 11128（Illegal API invocation from an unapproved channel / first message is not system），

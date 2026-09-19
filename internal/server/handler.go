@@ -472,6 +472,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if status == http.StatusServiceUnavailable || status == http.StatusBadGateway {
 			code = "no_healthy_account"
 		}
+		if upstream.IsKind(ferr, upstream.ErrBrokenToolSeq) {
+			code = "tool_call_sequence_broken"
+			hintBrokenToolSeq(ferr)
+		}
 		writeOpenAIError(w, status, code, ferr.Error())
 		return
 	}
@@ -619,6 +623,11 @@ func (h *Handler) forwardStream(ctx context.Context, payload []byte, prefUID str
 					// 内容审核拒绝：用户侧问题，换账号重试无意义且不该惩罚账号
 					// （旧行为会走 ErrHardCredit 把账号冷却 12h）。直接把 422 交回调用方。
 					return nil, nil, http.StatusUnprocessableEntity, err
+				case upstream.ErrBrokenToolSeq:
+					// 工具调用序列断裂（11148）：会话历史里 tool_calls 与 tool 结果不配对。
+					// 断链在**请求体**里，换账号重试必然同样失败，冷却账号更是纯粹的误伤，
+					// 因此直接交回调用方；具体文案由调用方按协议渲染。
+					return nil, nil, http.StatusBadRequest, err
 				case upstream.ErrClient:
 					// 模型/通道不被该账号批准（如 11128 unapproved channel）：
 					// 往往是该 realm 不支持当前模型，换成另一个账号/realm 重试通常能成功，
@@ -1465,6 +1474,19 @@ func (h *Handler) apiQuotaLimit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "limit": limit})
 }
 
+// brokenToolSeqHint 给「11148 工具调用序列断裂」附加的可操作提示。
+// 上游原文是英文且只说 "start a new conversation"，中文环境下的排查指引见 docs/todo-2026-09-19.md。
+const brokenToolSeqHint = "（会话历史中 tool_calls 与 tool 结果不配对，重试/换号均无效；" +
+	"请输入 /clear 新建会话，或用 claude --resume <id> --fork-session 从历史分叉后继续）"
+
+// hintBrokenToolSeq 就地给上游错误补一段可操作提示，只补一次。
+func hintBrokenToolSeq(err error) {
+	var ue *upstream.Error
+	if errors.As(err, &ue) && !strings.Contains(ue.Msg, "tool_calls 与 tool 结果不配对") {
+		ue.Msg += brokenToolSeqHint
+	}
+}
+
 // statusForKind 把上游错误映射给客户端的 HTTP 状态码。
 func statusForKind(kind upstream.ErrKind, upstreamStatus int) int {
 	switch kind {
@@ -1480,6 +1502,10 @@ func statusForKind(kind upstream.ErrKind, upstreamStatus int) int {
 		// 内容审核拒绝：既不是限流（429）也不是欠费（402/429），
 		// 422 Unprocessable Entity 才是语义正确的状态码。
 		return http.StatusUnprocessableEntity
+	case upstream.ErrBrokenToolSeq:
+		// 工具调用序列断裂：请求体自身不合法（历史不配对），400 语义正确。
+		// 不要映射成 429/503——那会诱导客户端「稍后重试」，而重试永远不成功。
+		return http.StatusBadRequest
 	default:
 		if upstreamStatus >= 400 && upstreamStatus < 600 {
 			return upstreamStatus
